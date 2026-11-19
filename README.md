@@ -3,15 +3,23 @@
 Web-App für Kundenverwaltung (Stall, Besitzer, Pferde, Anfahrt) und Terminbuchung mit Kunden-Bereich per QR-Code.
 Läuft komplett im Browser, ohne Server, ohne Konto. Daten liegen lokal im Browser-Speicher des Geräts.
 
-## Starten
-- Über GitHub Pages: `https://flodier.github.io/Franzi-s-Hufpflege-/` (Groß-/Kleinschreibung beachten! GitHub Pages im Repo unter Settings → Pages aktivieren, Branch `main`)
-- Auf dem iPhone/Android: Seite öffnen → „Zum Home-Bildschirm“. Das ist auf dem iPhone wichtig, weil Safari den Speicher
-  von Webseiten löschen kann, die länger als 7 Tage nicht besucht wurden.
+## Zwei getrennte Seiten
+| Seite | Adresse | Für wen |
+|---|---|---|
+| **Kundenseite** | `https://flodier.github.io/Franzi-s-Hufpflege-/` | Kunden: Termin buchen (Ziel des QR-Codes) |
+| **Verwaltung** | `https://flodier.github.io/Franzi-s-Hufpflege-/verwaltung.html` | Franzi + zweite Person: Kunden, Termine, QR, Einstellungen |
+
+Groß-/Kleinschreibung der Adresse beachten. Die Verwaltung aufs Handy legen: Seite öffnen → Teilen → „Zum Home-Bildschirm“
+(auf dem iPhone wichtig, damit Safari die Daten nicht nach 7 Tagen Nichtbenutzung löscht).
+Wer auf diesem Gerät schon Verwaltungsdaten hat und die Hauptadresse öffnet, wird automatisch zur Verwaltung weitergeleitet.
+
+Dateien: `index.html` (Kundenseite), `verwaltung.html`, `app.js` (gemeinsamer Code), `style.css`, `config.js` (Online-Zugang),
+`qrcode.js`, Logo-Bilder, `supabase/setup.sql`.
 
 ## Ablauf
 1. **Einstellungen**: Name, WhatsApp-Nummer, E-Mail, Arbeitszeiten, Minuten pro Pferd, Puffer für die Anfahrt, Urlaub.
 2. **Kunden** anlegen: Besitzer, Stall, beide Anschriften, Telefon, E-Mail, Pferde (Anzahl wird gezählt), Anfahrtsweg.
-3. **Neuer Termin**: Kunde wählen → freie Tage grün → freie Uhrzeiten grün → speichern → per WhatsApp/E-Mail senden.
+3. **Neuer Termin** (Verwaltung): Kunde wählen → freie Tage grün → freie Uhrzeiten grün → speichern → per WhatsApp/E-Mail senden.
 4. **QR / Link**: QR-Code erzeugen und drucken oder teilen. Kunden scannen ihn, wählen Tag + Uhrzeit und buchen.
    Die Buchung kommt als WhatsApp/E-Mail mit einem Link an. Ein Tipp auf den Link trägt den Termin ein (inkl. Kollisionsprüfung).
 

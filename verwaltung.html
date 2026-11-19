@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Hufpflege">
+<meta name="theme-color" content="#0b2318">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="logo-96.png">
+<link rel="stylesheet" href="style.css">
+<title>Franzi's Hufpflege – Verwaltung</title>
+</head>
+<body data-page="verwaltung">
+<header class="top"><img src="logo-96.png" alt=""><div><h1 id="title">Franzi's Hufpflege</h1><small id="subtitle"></small></div></header>
+<nav class="tabs" id="tabs"></nav>
+<main id="app"></main>
+
+<dialog id="modal">
+  <div class="modal-head"><h2 id="modal-title"></h2><button onclick="closeModal()" aria-label="Schließen">✕</button></div>
+  <div id="modal-body"></div>
+</dialog>
+<div id="toast"></div>
+
+<script src="qrcode.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
