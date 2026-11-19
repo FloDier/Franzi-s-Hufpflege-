@@ -25,9 +25,11 @@ const fmtDateLong = s => { const d = parseDs(s); return `${WD_LONG[d.getDay()]},
 const mapsUrl = addr => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr);
 /* Zwei getrennte Seiten: Hauptadresse = Kundenseite (index.html), Verwaltung = verwaltung.html */
 const dirUrl = () => location.origin + location.pathname.replace(/[^/]*$/, '');
-const customerUrl = () => dirUrl();
+const cardUrl = () => dirUrl();                       // Visitenkarten-Seite (Ziel des gedruckten QR-Codes)
+const customerUrl = () => dirUrl() + 'buchen.html';   // Online-Buchung
 const ownerUrl = () => dirUrl() + 'verwaltung.html';
-const PAGE = document.body.dataset.page === 'verwaltung' ? 'verwaltung' : 'kunde';
+const PAGE = document.body.dataset.page || 'kunde';   // karte | kunde | verwaltung | impressum | datenschutz
+const K = window.HUFPFLEGE_KONTAKT || {};
 
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2600); }
 function openModal(title, html, onMount) { $('#modal-title').textContent = title; $('#modal-body').innerHTML = html; const d = $('#modal'); if (!d.open) d.showModal(); d.scrollTop = 0; onMount && onMount($('#modal-body')); }
@@ -623,12 +625,20 @@ async function sendBookingLink(id) {
     ${CLOUD ? 'Zeigt immer die aktuellen freien Zeiten.' : `Gültig ${data.settings.horizonWeeks} Wochen.`}</p>${sendButtons(c.phone, c.mail, 'Termin buchen', text)}`);
 }
 function qrSvg(text) {
-  const qr = qrcode(0, 'L'); qr.addData(text, 'Byte'); qr.make();
+  const qr = qrcode(0, text.length < 300 ? 'M' : 'L'); qr.addData(text, 'Byte'); qr.make();
   return { svg: qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }), img: qr.createDataURL(8, 4), modules: qr.getModuleCount() };
 }
 function renderBuchung() {
   const s = data.settings;
+  const card = qrSvg(cardUrl());
   $('#app').innerHTML = `
+    <div class="card"><h2>QR-Code für die Visitenkarte</h2>
+      <p class="muted small">Führt zur Visitenkarten-Seite (Logo, Anrufen, WhatsApp, Kontakt speichern, Termin buchen).
+      Dieser Code ändert sich nie – er kann gedruckt werden, sobald die endgültige Internet-Adresse feststeht.</p>
+      <div style="text-align:center"><div class="qr">${card.svg}</div><p class="muted small">${esc(cardUrl())}</p></div>
+      <div class="row">
+        <button id="cardSvg">⬇️ SVG für die Druckerei</button><button id="cardPng">⬇️ PNG (hochauflösend)</button>
+        <a class="btn" target="_blank" rel="noopener" href="${esc(cardUrl() + '#karte')}">Visitenkarten-Seite ansehen</a></div></div>
     <div class="card"><h2>Kunden-Bereich per QR-Code</h2>
       <p class="muted small">Kunden scannen den Code, sehen freie Tage (grün), wählen eine Uhrzeit und buchen.
       ${CLOUD ? 'Die Buchung erscheint sofort unter „Termine → Neue Online-Buchungen“ auf beiden Geräten.' : 'Die Buchung kommt per WhatsApp oder E-Mail bei Ihnen an – ein Tipp auf den Link darin trägt den Termin hier ein.'}</p>
@@ -638,6 +648,17 @@ function renderBuchung() {
       ${!s.phone && !s.mail ? '<div class="banner">Bitte zuerst in den <b>Einstellungen</b> Ihre Telefonnummer und/oder E-Mail eintragen – dorthin werden Buchungen geschickt.</div>' : ''}
       <button class="primary big" id="qrMake" ${!s.phone && !s.mail ? 'disabled' : ''}>QR-Code & Link erzeugen</button>
       <div id="qrOut" style="margin-top:14px"></div></div>`;
+  const dl = (blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); };
+  const svgFile = () => card.svg.replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" ').replace(/xmlns="http:\/\/www\.w3\.org\/2000\/svg" (.*)xmlns="http:\/\/www\.w3\.org\/2000\/svg"/, 'xmlns="http://www.w3.org/2000/svg" $1');
+  $('#cardSvg').onclick = () => dl(new Blob([svgFile()], { type: 'image/svg+xml' }), 'visitenkarte-qr.svg');
+  $('#cardPng').onclick = () => {
+    const img = new Image(), size = 2000;
+    img.onload = () => { const c = document.createElement('canvas'); c.width = c.height = size; const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, size, size); g.imageSmoothingEnabled = false; g.drawImage(img, 0, 0, size, size);
+      c.toBlob(b => dl(b, 'visitenkarte-qr.png'), 'image/png'); };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgFile());
+  };
   $('#qrMake').onclick = async () => {
     const link = await buildBookingLink(null);
     let q;
@@ -959,16 +980,24 @@ ${link}`;
 let mode = PAGE === 'verwaltung' ? 'owner' : 'customer';
 async function boot() {
   const h = location.hash;
-  if (PAGE === 'kunde') {
+  if (PAGE === 'impressum' || PAGE === 'datenschutz') return renderLegal(PAGE);
+  if (PAGE === 'karte' || PAGE === 'kunde') {
     // Anfrage-Links gehören in die Verwaltung (auch alte Links, die noch auf die Hauptadresse zeigen)
     if (h.startsWith('#r=')) return location.replace(ownerUrl() + h);
+  }
+  if (PAGE === 'karte') {
+    if (h.startsWith('#b=') || h.startsWith('#live')) return location.replace(customerUrl() + h);   // alte Buchungslinks
+    // Altes Home-Bildschirm-Symbol der Betreiberin zeigt auf die Hauptadresse → Verwaltung öffnen
+    const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+    if (!h && standalone && (localStorage.getItem(KEY + '-auth') || (loadJSON(KEY, {}).customers || []).length)) return location.replace(ownerUrl());
+    return renderKarte();
+  }
+  if (PAGE === 'kunde') {
     if (h.startsWith('#b=')) return renderCustomer(h.slice(3));
     if (h.startsWith('#live=')) return CLOUD ? renderCustomer(h.slice(6), true) : renderNoBooking();
-    // Ohne Zusatz: Betreiberin (Daten/Anmeldung auf diesem Gerät, z. B. altes Home-Bildschirm-Symbol) → Verwaltung
-    if (!h && (localStorage.getItem(KEY + '-auth') || (loadJSON(KEY, {}).customers || []).length)) return location.replace(ownerUrl());
     return CLOUD ? renderCustomer('', true) : renderNoBooking();
   }
-  // Verwaltung: Kunden-Links gehören auf die Kundenseite
+  // Verwaltung: Kunden-Links gehören auf die Buchungsseite
   if (h.startsWith('#b=') || h.startsWith('#live')) return location.replace(customerUrl() + h);
   render();
   if (CLOUD) {
@@ -979,11 +1008,97 @@ async function boot() {
   }
   if (h.startsWith('#r=')) { const packed = h.slice(3); history.replaceState(null, '', ownerUrl()); await handleRequest(packed); }
 }
+
+/* =====================================================================
+   VISITENKARTEN-SEITE (Hauptadresse, Ziel des gedruckten QR-Codes)
+   ===================================================================== */
+const kWa = () => K.whatsapp || K.telefon;
+const kAddr = () => [K.strasse, [K.plz, K.ort].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+const legalFooter = () => `<p class="footer-links"><a href="impressum.html">Impressum</a> · <a href="datenschutz.html">Datenschutz</a></p>`;
+function renderKarte() {
+  document.title = K.firma || "Franzi's Hufpflege";
+  const tel = K.telefon ? 'tel:' + K.telefon.replace(/[^\d+]/g, '') : '';
+  const btn = (href, icon, label, cls = '', attrs = '') => href ? `<a class="btn big kbtn ${cls}" href="${esc(href)}" ${attrs}><span>${icon}</span>${label}</a>` : '';
+  $('#app').innerHTML = `
+    <div class="hero karte-hero"><img src="apple-touch-icon.png" alt="Logo ${esc(K.firma)}">
+      <h1 class="karte-name">${esc(K.firma || "Franzi's Hufpflege")}</h1>
+      ${K.inhaberin ? `<div class="karte-sub">${esc(K.inhaberin)}</div>` : ''}
+      ${K.beruf ? `<div class="karte-sub" style="opacity:.8">${esc(K.beruf)}</div>` : ''}</div>
+    <div class="karte-buttons">
+      ${CLOUD ? btn('buchen.html', '📅', 'Termin buchen', 'primary')
+        : (kWa() ? btn(waLink(kWa(), 'Hallo, ich hätte gerne einen Termin zur Hufbearbeitung.'), '📅', 'Termin anfragen', 'primary', 'target="_blank" rel="noopener"') : '')}
+      ${btn(tel, '📞', 'Anrufen')}
+      ${btn(kWa() ? waLink(kWa(), '') : '', '💬', 'WhatsApp', 'wa', 'target="_blank" rel="noopener"')}
+      ${btn(K.email ? 'mailto:' + K.email : '', '✉️', 'E-Mail schreiben')}
+      <button class="btn big kbtn" id="vcf"><span>👤</span>Kontakt speichern</button>
+    </div>
+    ${(K.leistungen || []).length ? `<div class="card"><b>Leistungen</b><ul class="kliste">${K.leistungen.map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>` : ''}
+    ${K.einzugsgebiet || K.erreichbarkeit || kAddr() ? `<div class="card small">
+      ${K.einzugsgebiet ? `<div><b>🚗 Einsatzgebiet:</b> ${esc(K.einzugsgebiet)}</div>` : ''}
+      ${K.erreichbarkeit ? `<div style="margin-top:4px"><b>🕐 Erreichbar:</b> ${esc(K.erreichbarkeit)}</div>` : ''}
+      ${kAddr() ? `<div style="margin-top:4px"><b>📍</b> ${esc(kAddr())}</div>` : ''}</div>` : ''}
+    ${K.instagram || K.facebook ? `<div class="row" style="justify-content:center">
+      ${K.instagram ? `<a class="btn" target="_blank" rel="noopener" href="${esc(K.instagram)}">Instagram</a>` : ''}
+      ${K.facebook ? `<a class="btn" target="_blank" rel="noopener" href="${esc(K.facebook)}">Facebook</a>` : ''}</div>` : ''}
+    ${legalFooter()}`;
+  $('#vcf').onclick = saveVCard;
+}
+async function saveVCard() {
+  const e = v => String(v || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+  const [vor, ...rest] = (K.inhaberin || '').split(' ');
+  let photo = '';
+  try { const b = await (await fetch('apple-touch-icon.png')).blob(); photo = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result.split(',')[1]); f.readAsDataURL(b); }); } catch (err) { photo = ''; }
+  const lines = ['BEGIN:VCARD', 'VERSION:3.0',
+    K.inhaberin ? `N:${e(rest.join(' '))};${e(vor)};;;` : `N:;;;;`, `FN:${e(K.inhaberin || K.firma)}`, `ORG:${e(K.firma)}`,
+    K.beruf ? `TITLE:${e(K.beruf)}` : '', K.telefon ? `TEL;TYPE=CELL,VOICE:${K.telefon}` : '',
+    K.email ? `EMAIL;TYPE=INTERNET:${K.email}` : '',
+    kAddr() ? `ADR;TYPE=WORK:;;${e(K.strasse)};${e(K.ort)};;${e(K.plz)};Deutschland` : '',
+    `URL:${cardUrl()}`, K.erreichbarkeit ? `NOTE:${e('Erreichbar: ' + K.erreichbarkeit)}` : '',
+    photo ? `PHOTO;ENCODING=b;TYPE=PNG:${photo}` : '', 'END:VCARD'].filter(Boolean);
+  const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/vcard' });
+  const name = (K.firma || 'Kontakt').replace(/[^\wäöüÄÖÜß-]+/g, '-') + '.vcf';
+  const file = new File([blob], name, { type: 'text/vcard' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (err) { /* abgebrochen → Download */ } }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+}
+
+/* ---------- Impressum & Datenschutz (Inhalte aus kontakt.js) ---------- */
+function renderLegal(which) {
+  const fehlt = '<span style="color:var(--danger)">[bitte in kontakt.js eintragen]</span>';
+  const v = x => x ? esc(x) : fehlt;
+  const wer = `${v(K.inhaberin)}<br>${esc(K.firma || '')}<br>${v(K.strasse)}<br>${K.plz || K.ort ? esc(K.plz + ' ' + K.ort) : fehlt}`;
+  const kontakt = `Telefon: ${v(K.telefon)}<br>E-Mail: ${v(K.email)}`;
+  const html = which === 'impressum' ? `<h2>Impressum</h2>
+      <h3>Angaben gemäß § 5 DDG</h3><p>${wer}</p><h3>Kontakt</h3><p>${kontakt}</p>
+      ${K.ustId ? `<h3>Umsatzsteuer-ID</h3><p>Umsatzsteuer-Identifikationsnummer gemäß § 27a UStG: ${esc(K.ustId)}</p>` : ''}
+      <h3>Verbraucherstreitbeilegung</h3><p>Wir sind nicht bereit oder verpflichtet, an Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teilzunehmen.</p>`
+    : `<h2>Datenschutzerklärung</h2>
+      <div class="banner">Entwurf – bitte vor dem Druck der Visitenkarten prüfen bzw. mit einem Datenschutz-Generator abgleichen.</div>
+      <h3>1. Verantwortliche</h3><p>${wer}<br>${kontakt}</p>
+      <h3>2. Bereitstellung der Webseite</h3><p>Diese Seite wird über GitHub Pages (GitHub Inc., USA) bereitgestellt. Beim Aufruf verarbeitet der Anbieter technisch notwendige Daten
+      wie IP-Adresse, Zeitpunkt und aufgerufene Seite, um die Seite auszuliefern und abzusichern (Art. 6 Abs. 1 lit. f DSGVO).
+      GitHub ist unter dem EU-US Data Privacy Framework zertifiziert.</p>
+      <h3>3. Online-Terminbuchung</h3><p>Wenn Sie einen Termin buchen, verarbeiten wir Name, Telefonnummer, ggf. E-Mail, Name und Anschrift des Stalls,
+      Anzahl und Namen der Pferde, gewünschten Termin und Ihre Nachricht. Zweck ist die Vereinbarung und Durchführung des Termins (Art. 6 Abs. 1 lit. b DSGVO).
+      ${CLOUD ? 'Die Daten werden bei Supabase (Supabase Inc.) auf Servern in Frankfurt am Main (EU) gespeichert; mit dem Anbieter besteht ein Vertrag zur Auftragsverarbeitung.' : 'Die Buchung wird per WhatsApp oder E-Mail an uns übermittelt.'}
+      Damit Sie Ihre Angaben nicht erneut eintippen müssen, werden sie zusätzlich nur in Ihrem eigenen Browser gespeichert (lokaler Speicher); Sie können sie über die Browser-Einstellungen löschen.</p>
+      <h3>4. Kontakt per Telefon, E-Mail oder WhatsApp</h3><p>Wenn Sie uns kontaktieren, verarbeiten wir Ihre Angaben zur Bearbeitung der Anfrage (Art. 6 Abs. 1 lit. b bzw. f DSGVO).
+      Bei WhatsApp gelten zusätzlich die Datenschutzbestimmungen von WhatsApp (Meta Platforms Ireland Ltd.).</p>
+      <h3>5. Speicherdauer</h3><p>Wir speichern Kunden- und Termindaten, solange die Geschäftsbeziehung besteht, und darüber hinaus nur, soweit gesetzliche Aufbewahrungspflichten
+      (z. B. für Rechnungen) bestehen.</p>
+      <h3>6. Ihre Rechte</h3><p>Sie haben das Recht auf Auskunft, Berichtigung, Löschung, Einschränkung der Verarbeitung, Datenübertragbarkeit sowie Widerspruch.
+      Wenden Sie sich dazu an die oben genannte Kontaktadresse. Außerdem können Sie sich bei einer Datenschutz-Aufsichtsbehörde beschweren.</p>
+      <h3>7. Cookies und Tracking</h3><p>Diese Seite verwendet keine Cookies zu Werbe- oder Analysezwecken und kein Tracking.</p>`;
+  $('#app').innerHTML = `<div class="card legal">${html}</div><p class="footer-links"><a href="./">← Zurück</a></p>`;
+}
+
 function renderNoBooking() {
   $('#subtitle').textContent = 'Termin online buchen';
   $('#app').innerHTML = `<div class="hero"><img src="apple-touch-icon.png" alt="Logo"></div>
     <div class="card" style="text-align:center"><h2>Termin buchen</h2>
-    <p>Bitte scannen Sie den QR-Code oder öffnen Sie den Buchungslink, den Sie erhalten haben.</p></div>`;
+    <p>Bitte öffnen Sie den Buchungslink, den Sie erhalten haben${kWa() ? ', oder fragen Sie per WhatsApp an' : ''}.</p>
+    ${kWa() ? `<a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(kWa(), 'Hallo, ich hätte gerne einen Termin.'))}">💬 Termin per WhatsApp anfragen</a>` : ''}</div>
+    <p class="footer-links"><a href="./">← Zur Visitenkarte</a></p>${legalFooter()}`;
 }
 window.addEventListener('hashchange', () => location.reload());
 boot();

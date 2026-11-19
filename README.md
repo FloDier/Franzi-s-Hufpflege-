@@ -6,14 +6,19 @@ Läuft komplett im Browser, ohne Server, ohne Konto. Daten liegen lokal im Brows
 ## Zwei getrennte Seiten
 | Seite | Adresse | Für wen |
 |---|---|---|
-| **Kundenseite** | `https://flodier.github.io/Franzi-s-Hufpflege-/` | Kunden: Termin buchen (Ziel des QR-Codes) |
-| **Verwaltung** | `https://flodier.github.io/Franzi-s-Hufpflege-/verwaltung.html` | Franzi + zweite Person: Kunden, Termine, QR, Einstellungen |
+| **Visitenkarte** | `https://flodier.github.io/Franzi-s-Hufpflege-/` | Ziel des gedruckten QR-Codes: Anrufen, WhatsApp, Kontakt speichern, Termin buchen |
+| **Termin buchen** | `…/buchen.html` | Kunden: freie Tage/Uhrzeiten wählen und buchen |
+| **Verwaltung** | `…/verwaltung.html` | Franzi + zweite Person: Kunden, Termine, QR, Einstellungen |
+| Impressum / Datenschutz | `…/impressum.html`, `…/datenschutz.html` | werden aus `kontakt.js` befüllt |
+
+Kontaktdaten für Visitenkarte, „Kontakt speichern“ und Impressum stehen in **`kontakt.js`**.
+Den Druck-QR-Code (SVG für die Druckerei, PNG 2000 px) gibt es in der Verwaltung unter „QR / Link“.
 
 Groß-/Kleinschreibung der Adresse beachten. Die Verwaltung aufs Handy legen: Seite öffnen → Teilen → „Zum Home-Bildschirm“
 (auf dem iPhone wichtig, damit Safari die Daten nicht nach 7 Tagen Nichtbenutzung löscht).
 Wer auf diesem Gerät schon Verwaltungsdaten hat und die Hauptadresse öffnet, wird automatisch zur Verwaltung weitergeleitet.
 
-Dateien: `index.html` (Kundenseite), `verwaltung.html`, `app.js` (gemeinsamer Code), `style.css`, `config.js` (Online-Zugang),
+Dateien: `index.html` (Visitenkarte), `buchen.html`, `verwaltung.html`, `impressum.html`, `datenschutz.html`, `kontakt.js`, `app.js` (gemeinsamer Code), `style.css`, `config.js` (Online-Zugang),
 `qrcode.js`, Logo-Bilder, `supabase/setup.sql`.
 
 ## Ablauf
