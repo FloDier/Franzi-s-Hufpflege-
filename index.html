@@ -127,6 +127,7 @@
 <div id="toast"></div>
 
 <script src="qrcode.js"></script>
+<script src="config.js"></script>
 <script>
 'use strict';
 /* =====================================================================
@@ -274,9 +275,142 @@ function load() {
 function save() {
   localStorage.setItem(KEY, JSON.stringify(data));
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  if (CLOUD && cloud.sess) { queueDiff(); flush(); }
 }
 const customerById = id => data.customers.find(c => c.id === id);
 const custLabel = c => c ? (c.stable ? `${c.stable} – ${c.owner}` : c.owner) : '(gelöschter Kunde)';
+const apptLabel = a => { const c = customerById(a.customerId); if (c) return custLabel(c);
+  const r = a.request; return r ? (r.s ? `${r.s} – ${r.o}` : r.o) : '(gelöschter Kunde)'; };
+
+/* =====================================================================
+   Online-Speicher (Supabase): beide Geräte teilen dieselben Daten.
+   Ohne config.js-Eintrag läuft die App rein lokal wie bisher.
+   ===================================================================== */
+const CFG = window.HUFPFLEGE_CONFIG || {};
+const CLOUD = !!(CFG.supabaseUrl && CFG.supabaseKey);
+const loadJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } };
+class AuthError extends Error {}
+const cloud = {
+  sess: loadJSON(KEY + '-auth', null),
+  setSess(s) { this.sess = s; s ? localStorage.setItem(KEY + '-auth', JSON.stringify(s)) : localStorage.removeItem(KEY + '-auth'); },
+  async authCall(grant, body) {
+    const r = await fetch(`${CFG.supabaseUrl}/auth/v1/token?grant_type=${grant}`, { method: 'POST',
+      headers: { apikey: CFG.supabaseKey, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new AuthError(j.error_description || j.msg || j.message || 'Anmeldung fehlgeschlagen');
+    this.setSess({ access_token: j.access_token, refresh_token: j.refresh_token,
+      expires_at: j.expires_at || Math.floor(Date.now() / 1000) + (j.expires_in || 3600), email: j.user && j.user.email });
+  },
+  login(email, password) { return this.authCall('password', { email, password }); },
+  logout() { this.setSess(null); localStorage.removeItem(KEY + '-shadow'); localStorage.removeItem(KEY + '-outbox'); shadow = null; outbox = []; },
+  async token() {
+    if (!this.sess) throw new AuthError('Nicht angemeldet');
+    if (Date.now() / 1000 > this.sess.expires_at - 60) {
+      try { await this.authCall('refresh_token', { refresh_token: this.sess.refresh_token }); }
+      catch (e) { if (e instanceof AuthError) this.setSess(null); throw e; }
+    }
+    return this.sess.access_token;
+  },
+  async req(method, path, body, { auth = true, prefer } = {}) {
+    const headers = { apikey: CFG.supabaseKey, 'Content-Type': 'application/json' };
+    if (auth) headers.Authorization = 'Bearer ' + await this.token();
+    if (prefer) headers.Prefer = prefer;
+    const r = await fetch(CFG.supabaseUrl + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    if (r.status === 401 && auth) { this.setSess(null); throw new AuthError('Sitzung abgelaufen'); }
+    const txt = await r.text();
+    if (!r.ok) throw new Error(`Server ${r.status}: ${txt.slice(0, 200)}`);
+    return txt ? JSON.parse(txt) : null;
+  },
+  rpc(name, args) { return this.req('POST', '/rest/v1/rpc/' + name, args || {}, { auth: false }); }
+};
+
+/* Änderungen erkennen (Vergleich mit dem letzten Server-Stand) und in eine Warteschlange legen.
+   So geht auch offline nichts verloren: die Warteschlange wird gesendet, sobald wieder Netz da ist. */
+let shadow = loadJSON(KEY + '-shadow', null);
+let outbox = loadJSON(KEY + '-outbox', []);
+let syncState = 'ok', flushing = false;
+const persistSync = () => { localStorage.setItem(KEY + '-shadow', JSON.stringify(shadow)); localStorage.setItem(KEY + '-outbox', JSON.stringify(outbox)); };
+const snapshot = d => ({
+  settings: JSON.stringify({ ...d.settings, lastBackup: undefined }),
+  customers: Object.fromEntries(d.customers.map(c => [c.id, JSON.stringify(c)])),
+  appts: Object.fromEntries(d.appts.map(a => [a.id, JSON.stringify(a)]))
+});
+function enqueue(op) { outbox = outbox.filter(o => !(o.t === op.t && o.id === op.id)); outbox.push(op); }
+function queueDiff() {
+  const cur = snapshot(data), old = shadow || { settings: null, customers: {}, appts: {} };
+  if (cur.settings !== old.settings) enqueue({ t: 'settings', id: '1', op: 'up' });
+  for (const t of ['customers', 'appts']) {
+    for (const id in cur[t]) if (cur[t][id] !== old[t][id]) enqueue({ t, id, op: 'up' });
+    for (const id in old[t]) if (!(id in cur[t])) enqueue({ t, id, op: 'del' });
+  }
+  shadow = cur; persistSync();
+}
+async function sendOp(o) {
+  const upsert = (t, row) => cloud.req('POST', `/rest/v1/${t}?on_conflict=id`, row, { prefer: 'resolution=merge-duplicates,return=minimal' });
+  const now = new Date().toISOString();
+  if (o.op === 'del') return cloud.req('DELETE', `/rest/v1/${o.t}?id=eq.${encodeURIComponent(o.id)}`, undefined, { prefer: 'return=minimal' });
+  if (o.t === 'settings') return upsert('settings', { id: 1, data: { ...data.settings, lastBackup: undefined }, updated_at: now });
+  if (o.t === 'customers') { const c = customerById(o.id); return c && upsert('customers', { id: c.id, data: c, updated_at: now }); }
+  const a = data.appts.find(x => x.id === o.id);
+  return a && upsert('appts', { id: a.id, customer_id: a.customerId || null, day: a.date, start_min: a.start, end_min: a.end,
+    status: a.status || 'bestätigt', data: a, updated_at: now });
+}
+async function flush() {
+  if (!CLOUD || flushing) return;
+  flushing = true;
+  try {
+    while (outbox.length) { await sendOp(outbox[0]); outbox.shift(); persistSync(); }
+    syncState = 'ok';
+  } catch (e) {
+    syncState = e instanceof AuthError ? 'auth' : 'offline';
+    console.warn('Sync:', e.message);
+    if (e instanceof AuthError) render();
+  } finally { flushing = false; showSyncState(); }
+}
+/* Server-Stand holen. Erst wenn alle eigenen Änderungen gesendet sind, damit nichts überschrieben wird. */
+async function pull() {
+  if (!CLOUD || !cloud.sess) return;
+  await flush();
+  if (outbox.length) return;
+  let st, cs, as;
+  try {
+    [st, cs, as] = await Promise.all([cloud.req('GET', '/rest/v1/settings?select=data&id=eq.1'),
+      cloud.req('GET', '/rest/v1/customers?select=data'), cloud.req('GET', '/rest/v1/appts?select=*')]);
+  } catch (e) { syncState = e instanceof AuthError ? 'auth' : 'offline'; showSyncState(); if (e instanceof AuthError) render(); return; }
+  const server = {
+    settings: st[0] ? { ...DEFAULT_SETTINGS, ...st[0].data, lastBackup: data.settings.lastBackup } : data.settings,
+    customers: cs.map(r => r.data),
+    appts: as.map(r => ({ ...r.data, id: r.id, customerId: r.customer_id || null, date: r.day, start: r.start_min, end: r.end_min, status: r.status }))
+  };
+  const first = !shadow;
+  const serverSnap = snapshot(server);
+  if (first) {
+    // Erste Anmeldung auf diesem Gerät: lokale Daten, die online noch fehlen, werden hochgeladen.
+    const has = (list, id) => list.some(x => x.id === id);
+    server.customers.push(...data.customers.filter(c => !has(server.customers, c.id)));
+    server.appts.push(...data.appts.filter(a => !has(server.appts, a.id)));
+    if (!st[0]) serverSnap.settings = null;
+  }
+  const before = JSON.stringify(data);
+  data = server; shadow = serverSnap;
+  localStorage.setItem(KEY, JSON.stringify(data));
+  queueDiff(); flush();
+  syncState = 'ok'; showSyncState();
+  if (JSON.stringify(data) !== before) safeRender();
+}
+/* Nicht neu zeichnen, während jemand gerade tippt */
+let renderPending = false;
+function safeRender() {
+  const el = document.activeElement;
+  if (el && $('#app').contains(el) && /INPUT|TEXTAREA|SELECT/.test(el.tagName)) { renderPending = true; return; }
+  renderPending = false; render();
+}
+document.addEventListener('focusout', () => setTimeout(() => { if (renderPending) safeRender(); }, 300));
+function showSyncState() {
+  const el = $('#subtitle'); if (!el || !CLOUD || !cloud.sess || mode !== 'owner') return;
+  el.textContent = syncState === 'ok' ? (outbox.length ? '⏳ wird gespeichert …' : '✓ synchronisiert')
+    : syncState === 'offline' ? `⚠️ offline – ${outbox.length} Änderung(en) warten` : '⚠️ bitte neu anmelden';
+}
 
 function ownerAvailability(excludeApptId) {
   const s = data.settings, from = todayDs(), to = addDays(from, s.horizonWeeks * 7 - 1);
@@ -328,18 +462,47 @@ function renderTabs() {
 function render() {
   $('#title').textContent = data.settings.name || "Franzi's Hufpflege";
   $('#subtitle').textContent = 'Kunden & Terminplanung';
-  renderTabs();
+  if (CLOUD && !cloud.sess) return renderLogin();
+  $('#tabs').style.display = '';
+  renderTabs(); showSyncState();
   $('#app').onchange = null;
   ({ termine: renderTermine, kunden: renderKunden, buchung: renderBuchung, einstellungen: renderEinstellungen })[tab]();
 }
 
 function backupBanner() {
   const s = data.settings;
-  if (!data.customers.length && !data.appts.length) return '';
+  if (CLOUD || (!data.customers.length && !data.appts.length)) return '';
   const days = s.lastBackup ? dayDiff(s.lastBackup.slice(0, 10), todayDs()) : null;
   if (days !== null && days < 14) return '';
   return `<div class="banner">⚠️ Ihre Daten liegen nur auf diesem Gerät. ${days === null ? 'Es gibt noch keine Sicherung.' : `Letzte Sicherung vor ${days} Tagen.`}
     <button class="small" style="margin-left:6px" onclick="exportBackup()">Jetzt sichern</button></div>`;
+}
+
+/* ---------- Anmeldung (nur im Online-Modus) ---------- */
+function renderLogin() {
+  $('#tabs').style.display = 'none';
+  $('#app').innerHTML = `<div class="hero"><img src="apple-touch-icon.png" alt="Logo"></div>
+    <div class="card"><h2>Anmelden</h2>
+      <p class="muted small">Melden Sie sich mit Ihrem Zugang an. Beide Geräte sehen danach dieselben Kunden und Termine.</p>
+      <form id="loginForm">
+        <label class="f">E-Mail <input id="lMail" type="email" autocomplete="username" required></label>
+        <label class="f">Passwort <input id="lPw" type="password" autocomplete="current-password" required></label>
+        <button class="primary big" type="submit">Anmelden</button>
+      </form><p id="lErr" class="small" style="color:var(--danger)"></p></div>`;
+  $('#loginForm').onsubmit = async e => {
+    e.preventDefault();
+    const btn = $('#loginForm button'); btn.disabled = true; $('#lErr').textContent = '';
+    try {
+      const prev = loadJSON(KEY + '-lastuser', null), email = $('#lMail').value.trim();
+      await cloud.login(email, $('#lPw').value);
+      if (prev && prev !== email) { shadow = null; outbox = []; }
+      localStorage.setItem(KEY + '-lastuser', JSON.stringify(email));
+      render(); await pull(); toast('Angemeldet');
+    } catch (err) {
+      $('#lErr').textContent = err instanceof AuthError ? 'E-Mail oder Passwort falsch.' : 'Keine Verbindung zum Server.';
+      btn.disabled = false;
+    }
+  };
 }
 
 /* ---------- Termine ---------- */
@@ -347,14 +510,15 @@ let showPast = false;
 function renderTermine() {
   const today = todayDs();
   const sorted = [...data.appts].sort((a, b) => (a.date + pad(a.start).padStart(4, '0')).localeCompare(b.date + pad(b.start).padStart(4, '0')));
-  const upcoming = sorted.filter(a => a.date >= today), past = sorted.filter(a => a.date < today).reverse();
+  const fresh = sorted.filter(a => a.status === 'neu');
+  const upcoming = sorted.filter(a => a.date >= today && a.status !== 'neu'), past = sorted.filter(a => a.date < today).reverse();
   const group = list => {
     let h = '', last = '';
     for (const a of list) {
       if (a.date !== last) { h += `<div class="daylabel">${fmtDateLong(a.date)}</div>`; last = a.date; }
       const c = customerById(a.customerId);
       h += `<div class="card appt"><div class="t">${fmtTime(a.start)}<div class="muted small">${fmtTime(a.end)}</div></div>
-        <div class="grow"><b>${esc(custLabel(c))}</b>
+        <div class="grow"><b>${esc(apptLabel(a))}</b>
           <div class="muted small">${esc(a.horses && a.horses.length ? a.horses.join(', ') : a.count + ' Pferd(e)')}
           ${c && c.stableAddr ? ' · ' + esc(c.stableAddr) : ''}</div>
           ${a.note ? `<div class="small">${esc(a.note)}</div>` : ''}
@@ -368,11 +532,20 @@ function renderTermine() {
     }
     return h;
   };
+  const freshHTML = fresh.map(a => { const r = a.request || {};
+    return `<div class="card" style="border:2px solid var(--gold)"><div class="row"><b class="grow">${fmtDateLong(a.date)}, ${fmtTime(a.start)}–${fmtTime(a.end)}</b>
+      <span class="pill green">online gebucht</span></div>
+      <div class="small" style="margin-top:4px"><b>${esc(r.o)}</b>${r.s ? ' · ' + esc(r.s) : ''}<br>${r.a ? '📍 ' + esc(r.a) + '<br>' : ''}
+      ${r.t ? '📞 ' + esc(r.t) + ' ' : ''}${r.e ? '✉️ ' + esc(r.e) : ''}<br>🐴 ${esc(a.horses && a.horses.length ? a.horses.join(', ') : a.count + ' Pferd(e)')}
+      ${a.note ? '<br>💬 ' + esc(a.note) : ''}</div>
+      <div class="row" style="margin-top:10px"><button class="primary small" onclick="confirmOnline('${a.id}')">✅ Bestätigen</button>
+      <button class="small danger" onclick="rejectOnline('${a.id}')">Ablehnen</button></div></div>`; }).join('');
   $('#app').innerHTML = `${backupBanner()}
-    <div class="card"><b>Buchungsanfrage übernehmen</b>
+    ${fresh.length ? `<h3>Neue Online-Buchungen (${fresh.length})</h3>${freshHTML}` : ''}
+    ${CLOUD ? '' : `<div class="card"><b>Buchungsanfrage übernehmen</b>
       <p class="muted small" style="margin:4px 0 8px">Kunden schicken Ihnen nach der Buchung einen Link. Tippen Sie ihn an – oder fügen Sie ihn hier ein.</p>
       <div class="row"><input class="grow" id="reqInput" placeholder="Link aus WhatsApp/E-Mail einfügen">
-      <button onclick="importFromInput()">Übernehmen</button></div></div>
+      <button onclick="importFromInput()">Übernehmen</button></div></div>`}
     <h3>Kommende Termine (${upcoming.length})</h3>
     ${upcoming.length ? group(upcoming) : '<p class="muted">Noch keine Termine. Tippen Sie auf „+ Neuer Termin“.</p>'}
     ${past.length ? `<button style="margin-top:14px" onclick="showPast=!showPast;render()">${showPast ? 'Vergangene ausblenden' : `Vergangene Termine anzeigen (${past.length})`}</button>
@@ -458,7 +631,7 @@ function openApptEditor(presetCustomerId, editId) {
       st.note = $('#eNote', body).value.trim();
       const end = st.start + st.duration;
       const clash = overlaps(st.date, st.start, end, editId);
-      if (clash.length && !confirm(`Achtung: überschneidet sich mit ${clash.map(a => fmtTime(a.start) + ' ' + custLabel(customerById(a.customerId))).join(', ')}. Trotzdem speichern?`)) return;
+      if (clash.length && !confirm(`Achtung: überschneidet sich mit ${clash.map(a => fmtTime(a.start) + ' ' + apptLabel(a)).join(', ')}. Trotzdem speichern?`)) return;
       let appt;
       if (editing) { appt = editing; Object.assign(appt, { customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note }); }
       else { appt = { id: uid(), customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note, created: new Date().toISOString(), source: 'betrieb' }; data.appts.push(appt); }
@@ -551,6 +724,11 @@ function openCustomerEditor(id, afterSave) {
 
 /* ---------- Buchungslink / QR ---------- */
 async function buildBookingLink(customer) {
+  if (CLOUD) {
+    if (!customer) return baseUrl() + '#live';
+    return baseUrl() + '#live=' + await pack({ c: { i: customer.id, o: customer.owner, s: customer.stable, a: customer.stableAddr,
+      t: customer.phone, e: customer.mail, h: customer.horses.map(h => h.name) } });
+  }
   const s = data.settings, from = todayDs(), days = s.horizonWeeks * 7, to = addDays(from, days - 1);
   const r5 = m => Math.round(m / 5);
   const p = {
@@ -568,8 +746,8 @@ async function sendBookingLink(id) {
   if (!data.settings.phone && !data.settings.mail) { toast('Bitte zuerst in den Einstellungen Ihre Telefonnummer/E-Mail eintragen'); tab = 'einstellungen'; render(); return; }
   const link = await buildBookingLink(c);
   const text = `Hallo ${c.owner},\n\nüber diesen Link können Sie sich direkt einen freien Termin aussuchen:\n${link}\n\nViele Grüße\n${data.settings.name}`;
-  openModal('Persönlichen Buchungslink senden', `<p class="muted small">Der Link enthält die freien Zeiten von heute und die Daten von ${esc(c.owner)} (vorausgefüllt).
-    Gültig ${data.settings.horizonWeeks} Wochen.</p>${sendButtons(c.phone, c.mail, 'Termin buchen', text)}`);
+  openModal('Persönlichen Buchungslink senden', `<p class="muted small">Der Link enthält ${CLOUD ? '' : 'die freien Zeiten von heute und '}die Daten von ${esc(c.owner)} (vorausgefüllt).
+    ${CLOUD ? 'Zeigt immer die aktuellen freien Zeiten.' : `Gültig ${data.settings.horizonWeeks} Wochen.`}</p>${sendButtons(c.phone, c.mail, 'Termin buchen', text)}`);
 }
 function qrSvg(text) {
   const qr = qrcode(0, 'L'); qr.addData(text, 'Byte'); qr.make();
@@ -580,9 +758,10 @@ function renderBuchung() {
   $('#app').innerHTML = `
     <div class="card"><h2>Kunden-Bereich per QR-Code</h2>
       <p class="muted small">Kunden scannen den Code, sehen freie Tage (grün), wählen eine Uhrzeit und buchen.
-      Die Buchung kommt per WhatsApp oder E-Mail bei Ihnen an – ein Tipp auf den Link darin trägt den Termin hier ein.</p>
-      <div class="banner">ℹ️ Der Code enthält die freien Zeiten von <b>heute</b> für ${s.horizonWeeks} Wochen. Nach neuen Terminen bitte neu erzeugen,
-      sonst sehen Kunden veraltete Lücken. Ein dauerhaft aufgehängter QR-Code braucht einen Online-Server (siehe Hinweis in der Anleitung).</div>
+      ${CLOUD ? 'Die Buchung erscheint sofort unter „Termine → Neue Online-Buchungen“ auf beiden Geräten.' : 'Die Buchung kommt per WhatsApp oder E-Mail bei Ihnen an – ein Tipp auf den Link darin trägt den Termin hier ein.'}</p>
+      ${CLOUD ? '<div class="banner" style="background:var(--free-bg);border-color:var(--free-line);color:var(--brand)">✅ Dieser Code bleibt <b>dauerhaft gültig</b> und zeigt immer die aktuellen freien Zeiten – ideal zum Aufhängen am Stall.</div>'
+      : `<div class="banner">ℹ️ Der Code enthält die freien Zeiten von <b>heute</b> für ${s.horizonWeeks} Wochen. Nach neuen Terminen bitte neu erzeugen,
+      sonst sehen Kunden veraltete Lücken.</div>`}
       ${!s.phone && !s.mail ? '<div class="banner">Bitte zuerst in den <b>Einstellungen</b> Ihre Telefonnummer und/oder E-Mail eintragen – dorthin werden Buchungen geschickt.</div>' : ''}
       <button class="primary big" id="qrMake" ${!s.phone && !s.mail ? 'disabled' : ''}>QR-Code & Link erzeugen</button>
       <div id="qrOut" style="margin-top:14px"></div></div>`;
@@ -591,7 +770,7 @@ function renderBuchung() {
     let q;
     try { q = qrSvg(link); } catch (e) { $('#qrOut').innerHTML = `<div class="banner">Zu viele Daten für einen QR-Code (${link.length} Zeichen). Bitte in den Einstellungen den Buchungszeitraum verkürzen. Den Link können Sie trotzdem verschicken.</div>`; }
     $('#qrOut').innerHTML = (q ? `<div style="text-align:center"><div class="qr">${q.svg}</div>
-        <p class="muted small">Termin buchen bei ${esc(s.name)} – gültig bis ${fmtDate(addDays(todayDs(), s.horizonWeeks * 7 - 1))}</p>
+        <p class="muted small">Termin buchen bei ${esc(s.name)}${CLOUD ? '' : ' – gültig bis ' + fmtDate(addDays(todayDs(), s.horizonWeeks * 7 - 1))}</p>
         ${link.length > 1200 ? '<p class="small" style="color:#b45309">Der Code ist sehr fein – zum Scannen ggf. vergrößern oder den Zeitraum verkürzen.</p>' : ''}</div>` : $('#qrOut').innerHTML) + `
       <label class="f">Link <input id="qrLink" readonly value="${esc(link)}"></label>
       <div class="row noprint">
@@ -624,8 +803,13 @@ function renderEinstellungen() {
     <div class="card"><h2>Freie Tage / Urlaub</h2>
       <div class="row"><input type="date" id="bFrom"> bis <input type="date" id="bTo"><button id="bAdd">Sperren</button></div>
       <div id="bList" style="margin-top:8px">${s.blocked.filter(d => d >= todayDs()).sort().map(d => `<span class="pill" style="margin:2px">${fmtDate(d)} <a href="#" data-unblock="${d}">✕</a></span>`).join('') || '<span class="muted small">Keine gesperrten Tage.</span>'}</div></div>
+    ${CLOUD ? `<div class="card"><h2>Online-Konto</h2><p class="small">Angemeldet als <b>${esc(cloud.sess && cloud.sess.email)}</b><br>
+      <span class="muted">Kunden und Termine werden automatisch mit dem zweiten Gerät abgeglichen.</span></p>
+      <div class="row"><button onclick="pull().then(()=>toast('Abgeglichen'))">🔄 Jetzt abgleichen</button>
+      <button class="danger" onclick="if(outbox.length&&!confirm('Es gibt noch nicht gesendete Änderungen. Trotzdem abmelden?'))return;cloud.logout();render()">Abmelden</button></div></div>` : ''}
     <div class="card"><h2>Datensicherung</h2>
-      <p class="muted small">Alle Daten liegen ausschließlich in diesem Browser auf diesem Gerät. Wird der Browser-Speicher gelöscht, sind sie weg.
+      <p class="muted small">${CLOUD ? 'Die Daten liegen online und auf Ihren Geräten. Eine zusätzliche Sicherung schadet trotzdem nicht.'
+      : 'Alle Daten liegen ausschließlich in diesem Browser auf diesem Gerät. Wird der Browser-Speicher gelöscht, sind sie weg.'}
       Sichern Sie regelmäßig (z. B. in iCloud/OneDrive/Google Drive). ${s.lastBackup ? 'Letzte Sicherung: ' + fmtDate(s.lastBackup.slice(0, 10)) : ''}</p>
       <div class="row"><button onclick="exportBackup()">💾 Sicherung herunterladen</button>
       <label class="btn">📂 Sicherung laden<input type="file" accept=".json,application/json" id="bImport" hidden></label></div>
@@ -668,6 +852,42 @@ function exportBackup() {
 }
 
 /* ---------- Buchungsanfrage eines Kunden übernehmen ---------- */
+function findCustomer(rc) {
+  const norm = p => waNumber(p);
+  return (rc.i && customerById(rc.i)) || data.customers.find(c => (rc.t && c.phone && norm(c.phone) === norm(rc.t)) ||
+    (rc.e && c.mail && c.mail.toLowerCase() === String(rc.e).toLowerCase()) ||
+    (c.owner.toLowerCase() === String(rc.o || '').toLowerCase() && (c.stable || '').toLowerCase() === String(rc.s || '').toLowerCase()));
+}
+function ensureCustomerFrom(rc, horses) {
+  let cust = findCustomer(rc);
+  if (cust) {
+    if (!cust.phone && rc.t) cust.phone = String(rc.t);
+    if (!cust.mail && rc.e) cust.mail = String(rc.e);
+    if (!cust.stableAddr && rc.a) cust.stableAddr = String(rc.a);
+    if (!cust.stable && rc.s) cust.stable = String(rc.s);
+    for (const h of horses) if (!cust.horses.some(x => x.name.toLowerCase() === h.toLowerCase())) cust.horses.push({ name: h, info: '' });
+    return cust;
+  }
+  cust = { id: uid(), created: new Date().toISOString(), owner: String(rc.o || 'Unbekannt'), stable: String(rc.s || ''), stableAddr: String(rc.a || ''),
+    ownerAddr: '', phone: String(rc.t || ''), mail: String(rc.e || ''), route: '', note: '', horses: horses.map(name => ({ name, info: '' })) };
+  data.customers.push(cust); return cust;
+}
+/* Online-Buchung (Supabase) bestätigen / ablehnen */
+function confirmOnline(id) {
+  const a = data.appts.find(x => x.id === id); if (!a) return;
+  const horses = (a.horses || []).map(String).filter(Boolean);
+  const c = ensureCustomerFrom(a.request || {}, horses);
+  a.customerId = c.id; a.status = 'bestätigt';
+  save(); render(); openSend(a.id); toast('Termin bestätigt');
+}
+async function rejectOnline(id) {
+  const a = data.appts.find(x => x.id === id); if (!a) return;
+  if (!confirm(`Buchung von ${apptLabel(a)} am ${fmtDate(a.date)} ablehnen? Die Zeit wird wieder frei.`)) return;
+  const r = a.request || {};
+  data.appts = data.appts.filter(x => x.id !== id); save(); render();
+  const text = `Hallo ${r.o || ''},\n\nden Termin am ${fmtDateLong(a.date)} um ${fmtTime(a.start)} Uhr kann ich leider nicht wahrnehmen. Bitte suchen Sie sich hier einen anderen Termin aus:\n${await buildBookingLink(findCustomer(r) || null)}\n\nViele Grüße\n${data.settings.name}`;
+  openModal('Absage senden', sendButtons(r.t, r.e, 'Ihre Terminbuchung', text));
+}
 function importFromInput() {
   const v = $('#reqInput').value.trim(), i = v.indexOf('#r=');
   if (i < 0) return toast('Kein gültiger Buchungslink');
@@ -678,10 +898,8 @@ async function handleRequest(packed) {
   try { r = await unpack(packed); if (!r || !/^\d{4}-\d\d-\d\d$/.test(r.d) || typeof r.s !== 'number' || typeof r.e !== 'number' || !r.c) throw 0; }
   catch (e) { toast('Buchungslink ist beschädigt'); return; }
   if (data.appts.some(a => a.reqId === r.q)) { toast('Diese Buchung wurde bereits übernommen'); tab = 'termine'; render(); return; }
-  const rc = r.c, norm = p => waNumber(p);
-  let cust = (rc.i && customerById(rc.i)) || data.customers.find(c => (rc.t && c.phone && norm(c.phone) === norm(rc.t)) ||
-    (rc.e && c.mail && c.mail.toLowerCase() === String(rc.e).toLowerCase()) ||
-    (c.owner.toLowerCase() === String(rc.o || '').toLowerCase() && (c.stable || '').toLowerCase() === String(rc.s || '').toLowerCase()));
+  const rc = r.c;
+  let cust = findCustomer(rc);
   const clash = overlaps(r.d, r.s, r.e);
   const horses = Array.isArray(rc.h) ? rc.h.map(String).filter(Boolean) : [];
   openModal('Neue Buchung', `
@@ -692,20 +910,10 @@ async function handleRequest(packed) {
       🐴 ${esc(horses.length ? horses.join(', ') : (rc.n || 1) + ' Pferd(e)')}
       ${r.k ? `<br>💬 ${esc(r.k)}` : ''}</div>
     <p class="small">${cust ? `✅ Zugeordnet zu Kunde <b>${esc(custLabel(cust))}</b>` : '🆕 Neuer Kunde – wird automatisch angelegt.'}</p>
-    ${clash.length ? `<div class="banner">⚠️ Überschneidung mit: ${clash.map(a => esc(fmtTime(a.start) + ' ' + custLabel(customerById(a.customerId)))).join(', ')}</div>` : ''}
+    ${clash.length ? `<div class="banner">⚠️ Überschneidung mit: ${clash.map(a => esc(fmtTime(a.start) + ' ' + apptLabel(a))).join(', ')}</div>` : ''}
     <div class="row"><button class="primary grow big" id="rOk">${clash.length ? 'Trotzdem bestätigen' : 'Termin bestätigen'}</button></div>
     <div class="row" style="margin-top:8px"><button class="grow" id="rNo">Ablehnen & neuen Link senden</button></div>`, body => {
-    const ensureCustomer = () => {
-      if (cust) {
-        if (!cust.phone && rc.t) cust.phone = String(rc.t); if (!cust.mail && rc.e) cust.mail = String(rc.e);
-        if (!cust.stableAddr && rc.a) cust.stableAddr = String(rc.a);
-        for (const h of horses) if (!cust.horses.some(x => x.name.toLowerCase() === h.toLowerCase())) cust.horses.push({ name: h, info: '' });
-        return cust;
-      }
-      cust = { id: uid(), created: new Date().toISOString(), owner: String(rc.o || 'Unbekannt'), stable: String(rc.s || ''), stableAddr: String(rc.a || ''),
-        ownerAddr: '', phone: String(rc.t || ''), mail: String(rc.e || ''), route: '', note: '', horses: horses.map(name => ({ name, info: '' })) };
-      data.customers.push(cust); return cust;
-    };
+    const ensureCustomer = () => (cust = ensureCustomerFrom(rc, horses));
     $('#rOk', body).onclick = () => {
       const c = ensureCustomer();
       const a = { id: uid(), reqId: r.q, customerId: c.id, date: r.d, start: r.s, end: r.e, horses, count: horses.length || Number(rc.n) || 1,
@@ -724,11 +932,27 @@ async function handleRequest(packed) {
 /* =====================================================================
    KUNDEN-BEREICH (über QR-Code / Link, läuft auf dem Handy des Kunden)
    ===================================================================== */
-async function renderCustomer(packed) {
+async function renderCustomer(packed, live) {
   $('#tabs').style.display = 'none';
   $('#subtitle').textContent = 'Termin online buchen';
   let p;
-  try { p = await unpack(packed); } catch (e) { $('#app').innerHTML = '<div class="card">Dieser Buchungslink ist leider beschädigt. Bitte fordern Sie einen neuen an.</div>'; return; }
+  if (live) {
+    // Live-Modus: aktuelle freie Zeiten direkt vom Server (QR-Code bleibt dauerhaft gültig)
+    $('#app').innerHTML = '<div class="card">Freie Termine werden geladen …</div>';
+    let info, pre = null;
+    try { if (packed) pre = (await unpack(packed)).c || null; } catch (e) { pre = null; }
+    try { info = await cloud.rpc('get_booking_info'); } catch (e) {
+      $('#app').innerHTML = `<div class="card"><h2>Keine Verbindung</h2><p>Die freien Termine konnten nicht geladen werden. Bitte prüfen Sie Ihre Internetverbindung.</p>
+        <button onclick="location.reload()">Erneut versuchen</button></div>`; return; }
+    if (!info.ok) { $('#app').innerHTML = `<div class="card">${esc(info.error)}</div>`; return; }
+    const today = info.today, r5 = m => m / 5;
+    p = { n: info.name, p: info.phone, m: info.mail, w: (info.work || []).map(x => x ? [r5(x[0]), r5(x[1])] : 0),
+      r: info.raster || 30, h: info.minPerHorse || 45, b: info.buffer || 0, f: today.replace(/-/g, ''), d: info.horizonWeeks * 7,
+      x: (info.blocked || []).filter(d => d >= today).map(d => dayDiff(today, d)),
+      o: (info.busy || []).map(([d, s, e]) => [dayDiff(today, d), r5(s), r5(e)]), c: pre };
+  } else {
+    try { p = await unpack(packed); } catch (e) { $('#app').innerHTML = '<div class="card">Dieser Buchungslink ist leider beschädigt. Bitte fordern Sie einen neuen an.</div>'; return; }
+  }
   $('#title').textContent = p.n ? `Termin bei ${p.n}` : 'Termin buchen';
   document.title = $('#title').textContent;
   const from = `${p.f.slice(0, 4)}-${p.f.slice(4, 6)}-${p.f.slice(6, 8)}`, to = addDays(from, p.d - 1);
@@ -763,7 +987,7 @@ async function renderCustomer(packed) {
       <label class="f" style="margin-top:8px">Nachricht (optional) <textarea id="gNote" placeholder="z. B. Pferd lahmt vorne links"></textarea></label>
       <div id="gSummary" class="muted small"></div>
       <div id="gSend" style="margin-top:10px"></div>
-      <p class="muted small" style="margin-top:10px">Mit dem Absenden wird Ihre Buchung an ${esc(p.n)} übermittelt. Sie erhalten anschließend eine Bestätigung.
+      <p class="muted small" style="margin-top:10px">${live ? 'Mit dem Buchen wird der Termin fest für Sie reserviert.' : `Mit dem Absenden wird Ihre Buchung an ${esc(p.n)} übermittelt.`} Sie erhalten anschließend eine Bestätigung.
       Ihre Angaben werden nur zur Terminvereinbarung verwendet.</p></div></div></div>`;
 
   const app = $('#app');
@@ -795,6 +1019,29 @@ async function renderCustomer(packed) {
       ? `<b style="color:var(--brand)">${fmtDateLong(st.date)}, ${fmtTime(st.start)} – ${fmtTime(st.start + duration())} Uhr</b>` : '';
     const send = $('#gSend');
     if (missing.length) { send.innerHTML = `<button class="primary big" disabled>Termin verbindlich buchen</button><p class="muted small">Es fehlt noch: ${missing.join(', ')}</p>`; return; }
+    if (live) {
+      send.innerHTML = '<button class="primary big" id="gBook">✅ Termin verbindlich buchen</button>';
+      $('#gBook').onclick = async () => {
+        const btn = $('#gBook'); btn.disabled = true; btn.textContent = 'Wird gebucht …';
+        const g2 = readGuest(), note = $('#gNote').value.trim(), end = st.start + duration();
+        if (!pre) localStorage.setItem(guestKey, JSON.stringify({ o: g2.o, t: g2.t, s: g2.s, e: g2.e, a: g2.a, hn: g2.hn, count: st.count }));
+        let res;
+        try { res = await cloud.rpc('book_slot', { p_day: st.date, p_start: st.start, p_end: end, p_customer: { ...g2, hn: undefined }, p_note: note }); }
+        catch (e) { btn.disabled = false; btn.textContent = '✅ Termin verbindlich buchen'; alert('Keine Verbindung – bitte erneut versuchen.'); return; }
+        if (!res.ok) {
+          if (res.error === 'belegt') { alert('Diese Uhrzeit wurde gerade vergeben. Bitte wählen Sie eine andere.'); return renderCustomer(packed, true); }
+          btn.disabled = false; btn.textContent = '✅ Termin verbindlich buchen'; alert(res.error); return;
+        }
+        const text = `Hallo, ich habe gerade online einen Termin gebucht:\n📅 ${fmtDateLong(st.date)}, ${fmtTime(st.start)} Uhr\n👤 ${g2.o}${g2.s ? ' (' + g2.s + ')' : ''}`;
+        window.scrollTo(0, 0);
+        $('#app').innerHTML = `<div class="card" style="text-align:center"><h2>Termin gebucht ✅</h2>
+          <p><b>${fmtDateLong(st.date)}<br>${fmtTime(st.start)} – ${fmtTime(end)} Uhr</b></p>
+          <p>Ihr Termin ist fest reserviert. ${esc(p.n)} meldet sich mit einer Bestätigung.</p>
+          ${p.p ? `<a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(p.p, text))}">Zusätzlich per WhatsApp Bescheid geben</a>` : ''}
+          <p class="muted small" style="margin-top:14px">Sie können diese Seite jetzt schließen.</p></div>`;
+      };
+      return;
+    }
     send.innerHTML = `${p.p ? '<button class="wa big" id="gWa">✅ Verbindlich buchen per WhatsApp</button>' : ''}
       ${p.m ? `<button class="${p.p ? '' : 'primary '}big" id="gMailBtn" style="margin-top:8px">✅ Verbindlich buchen per E-Mail</button>` : ''}`;
     const go = async via => {
@@ -836,10 +1083,22 @@ ${link}`;
 /* =====================================================================
    Start
    ===================================================================== */
+let mode = 'owner';
 async function boot() {
   const h = location.hash;
-  if (h.startsWith('#b=')) return renderCustomer(h.slice(3));
+  if (h.startsWith('#b=')) { mode = 'customer'; return renderCustomer(h.slice(3)); }
+  if (h.startsWith('#live')) {
+    mode = 'customer';
+    if (!CLOUD) { $('#app').innerHTML = '<div class="card">Online-Buchung ist noch nicht eingerichtet.</div>'; return; }
+    return renderCustomer(h.startsWith('#live=') ? h.slice(6) : '', true);
+  }
   render();
+  if (CLOUD) {
+    pull();
+    setInterval(() => { if (!document.hidden) pull(); }, 30000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(); });
+    window.addEventListener('online', () => pull());
+  }
   if (h.startsWith('#r=')) { const packed = h.slice(3); history.replaceState(null, '', baseUrl()); await handleRequest(packed); }
 }
 window.addEventListener('hashchange', () => location.reload());
