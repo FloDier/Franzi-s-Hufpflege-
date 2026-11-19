@@ -248,10 +248,12 @@ async function startSync(localBefore) {
   const apply = () => {
     if (got.customers === null || got.appts === null || got.settings === undefined) return;
     const before = JSON.stringify(data);
-    data = {
+    const next = {
       customers: got.customers, appts: got.appts,
       settings: got.settings ? { ...DEFAULT_SETTINGS, ...got.settings, lastBackup: data.settings.lastBackup } : data.settings
     };
+    // Nur ersetzen, wenn sich inhaltlich etwas geändert hat – sonst arbeiten offene Fenster mit alten Kopien weiter
+    if (JSON.stringify(next) !== before) data = next;
     shadow = snapshot(data);
     if (!got.settings) shadow.settings = null;          // noch keine Einstellungen online → hochladen
     if (first) {
@@ -529,7 +531,7 @@ function openApptEditor(presetCustomerId, editId) {
       const clash = overlaps(st.date, st.start, end, editId);
       if (clash.length && !confirm(`Achtung: überschneidet sich mit ${clash.map(a => fmtTime(a.start) + ' ' + apptLabel(a)).join(', ')}. Trotzdem speichern?`)) return;
       let appt;
-      if (editing) { appt = editing; Object.assign(appt, { customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note }); }
+      if (editing) { appt = data.appts.find(a => a.id === editId) || editing; if (!data.appts.includes(appt)) data.appts.push(appt); Object.assign(appt, { customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note }); }
       else { appt = { id: uid(), customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note, created: new Date().toISOString(), source: 'betrieb', status: 'bestätigt' }; data.appts.push(appt); }
       save(); tab = 'termine'; render(); openSend(appt.id); toast('Termin gespeichert');
     };
@@ -608,11 +610,11 @@ function openCustomerEditor(id, afterSave) {
     $('#kSave', body).onclick = () => {
       const v = k => $(k, body).value.trim();
       if (!v('#kOwner')) { toast('Bitte den Namen des Besitzers eintragen'); $('#kOwner', body).focus(); return; }
-      const rec = id ? c : { id: uid(), created: new Date().toISOString() };
+      const rec = id ? (customerById(id) || c) : { id: uid(), created: new Date().toISOString() };
       Object.assign(rec, { owner: v('#kOwner'), stable: v('#kStable'), phone: v('#kPhone'), mail: v('#kMail'), ownerAddr: v('#kOwnerAddr'),
         stableAddr: v('#kStableAddr'), route: v('#kRoute'), note: v('#kNote'),
         horses: horses.map(h => ({ name: h.name.trim(), info: (h.info || '').trim() })).filter(h => h.name) });
-      if (!id) data.customers.push(rec);
+      if (!customerById(rec.id)) data.customers.push(rec);
       save(); closeModal(); render(); toast('Kunde gespeichert');
       if (afterSave) afterSave(rec);
     };
@@ -737,6 +739,7 @@ function renderEinstellungen() {
       <p class="muted small" style="margin-top:10px">${data.customers.length} Kunden · ${data.appts.length} Termine gespeichert</p></div>`;
 
   const saveSettings = () => {
+    const s = data.settings;
     s.name = $('#sName').value.trim(); s.phone = $('#sPhone').value.trim(); s.mail = $('#sMail').value.trim();
     for (const d of order) {
       const on = $(`[data-wd="${d}"]`).checked, f = parseTime($(`[data-from="${d}"]`).value), t = parseTime($(`[data-to="${d}"]`).value);
@@ -748,12 +751,13 @@ function renderEinstellungen() {
   };
   $('#app').onchange = e => { if (e.target.id !== 'bImport' && e.target.id !== 'bFrom' && e.target.id !== 'bTo') { saveSettings(); toast('Gespeichert'); } };
   $('#bAdd').onclick = () => {
+    const s = data.settings;
     const f = $('#bFrom').value, t = $('#bTo').value || f; if (!f) return toast('Bitte Datum wählen');
     for (let d = f; d <= t; d = addDays(d, 1)) if (!s.blocked.includes(d)) s.blocked.push(d);
     s.blocked = s.blocked.filter(d => d >= addDays(todayDs(), -60));
     save(); renderEinstellungen(); toast('Tage gesperrt');
   };
-  $('#bList').onclick = e => { const a = e.target.closest('[data-unblock]'); if (a) { e.preventDefault(); s.blocked = s.blocked.filter(d => d !== a.dataset.unblock); save(); renderEinstellungen(); } };
+  $('#bList').onclick = e => { const a = e.target.closest('[data-unblock]'); if (a) { e.preventDefault(); const s = data.settings; s.blocked = s.blocked.filter(d => d !== a.dataset.unblock); save(); renderEinstellungen(); } };
   $('#bImport').onchange = e => {
     const file = e.target.files[0]; if (!file) return;
     file.text().then(t => {
