@@ -19,7 +19,7 @@ Groß-/Kleinschreibung der Adresse beachten. Die Verwaltung aufs Handy legen: Se
 Wer auf diesem Gerät schon Verwaltungsdaten hat und die Hauptadresse öffnet, wird automatisch zur Verwaltung weitergeleitet.
 
 Dateien: `index.html` (Visitenkarte), `buchen.html`, `verwaltung.html`, `impressum.html`, `datenschutz.html`, `kontakt.js`, `app.js` (gemeinsamer Code), `style.css`, `config.js` (Online-Zugang),
-`qrcode.js`, Logo-Bilder, `supabase/setup.sql`.
+`qrcode.js`, Logo-Bilder, `firestore.rules`, `firebase/` (Firebase-Bibliothek, Apache-2.0).
 
 ## Ablauf
 1. **Einstellungen**: Name, WhatsApp-Nummer, E-Mail, Arbeitszeiten, Minuten pro Pferd, Puffer für die Anfahrt, Urlaub.
@@ -28,24 +28,26 @@ Dateien: `index.html` (Visitenkarte), `buchen.html`, `verwaltung.html`, `impress
 4. **QR / Link**: QR-Code erzeugen und drucken oder teilen. Kunden scannen ihn, wählen Tag + Uhrzeit und buchen.
    Die Buchung kommt als WhatsApp/E-Mail mit einem Link an. Ein Tipp auf den Link trägt den Termin ein (inkl. Kollisionsprüfung).
 
-## Zwei Geräte + Live-QR-Code (Online-Speicher Supabase)
-Ohne Einrichtung läuft die App nur lokal auf einem Gerät. Mit Supabase teilen sich zwei Personen alle Kunden und Termine,
-und der QR-Code am Stall zeigt immer die aktuellen freien Zeiten. Doppelbuchungen verhindert der Server.
+## Zwei Geräte + Live-Buchung (Online-Speicher Google Firebase / Firestore)
+Ohne Einrichtung läuft die App nur lokal auf einem Gerät. Mit Firestore teilen sich zwei Personen alle Kunden und Termine
+(Änderungen erscheinen sofort auf dem anderen Gerät, auch offline wird weitergearbeitet), und Kunden sehen über
+„Termin buchen“ immer die aktuellen freien Zeiten. Doppelbuchungen werden verhindert.
 
-Einmalige Einrichtung (ca. 15 Minuten):
-1. Auf supabase.com ein kostenloses Konto anlegen → **New project**, Region **Frankfurt (eu-central-1)**.
-2. Links **SQL Editor** → neue Abfrage → kompletten Inhalt von `supabase/setup.sql` einfügen → **Run**.
-3. **Authentication → Sign In / Providers**: „Allow new users to sign up“ **ausschalten**.
-   ⚠️ Wichtig! Sonst könnte sich jeder selbst ein Konto anlegen und Kundendaten lesen.
-4. **Authentication → Users → Add user**: je ein Benutzer für Franzi und die zweite Person (E-Mail + Passwort, „Auto confirm“).
-5. **Project Settings → API**: „Project URL“ und den „anon“ bzw. „publishable“ Key in `config.js` eintragen.
-   (Dieser Schlüssel darf öffentlich sein. Passwörter und den „service_role“/„secret“ Key niemals eintragen oder weitergeben!)
-6. Datenschutz: Mit Supabase den Auftragsverarbeitungsvertrag (DPA/AVV) abschließen und im Datenschutzhinweis erwähnen.
+Einmalige Einrichtung (ca. 15 Minuten), im selben Google-Konto wie die Essensliste, aber als **eigenes Projekt**:
+1. console.firebase.google.com → **Projekt hinzufügen** → Name z. B. `franzis-hufpflege` (Google Analytics nicht nötig).
+2. **Firestore** → **Datenbank erstellen** → Standort **`europe-west3` (Frankfurt)** → Produktionsmodus.
+   ⚠️ Der Standort lässt sich später nicht mehr ändern.
+3. **Authentication** → Jetzt starten → Anmeldemethode **E-Mail/Passwort** aktivieren →
+   Reiter **Nutzer** → zwei Nutzer anlegen (Franzi + zweite Person).
+4. **Firestore → Regeln**: Inhalt von `firestore.rules` einfügen, die zwei Platzhalter `TEAM_EMAIL_1/2` durch die
+   E-Mail-Adressen aus Schritt 3 ersetzen (klein geschrieben) → **Veröffentlichen**.
+   Nur diese zwei Konten sehen Kunden und Termine. Kunden ohne Anmeldung sehen nur „belegt“ (ohne Namen) und dürfen buchen.
+5. **Projekteinstellungen → Allgemein → Meine Apps → Web-App (`</>`)** hinzufügen → den Block `firebaseConfig`
+   (apiKey, authDomain, projectId …) in `config.js` eintragen. Diese Werte dürfen öffentlich sein.
+6. Datenschutz: In den Projekteinstellungen die Bedingungen zur Datenverarbeitung (Data Processing Terms) akzeptieren.
 
-Danach auf beiden Geräten die App öffnen und anmelden. Daten, die schon lokal auf einem Gerät liegen, werden bei der
-ersten Anmeldung automatisch hochgeladen. Ohne Netz wird weitergearbeitet. Änderungen werden gesendet, sobald wieder Verbindung besteht.
-
-Kostenlose Supabase-Projekte werden nach längerer Inaktivität pausiert. Bei regelmäßiger Nutzung passiert das nicht.
+Danach auf beiden Geräten `…/verwaltung.html` öffnen und anmelden. Daten, die schon lokal auf einem Gerät liegen,
+werden bei der ersten Anmeldung automatisch hochgeladen.
 
 ## Ohne Online-Speicher (nur lokal)
 - Der QR-Code enthält die freien Zeiten zum Zeitpunkt der Erzeugung. Nach neuen Terminen neu erzeugen.
@@ -53,7 +55,7 @@ Kostenlose Supabase-Projekte werden nach längerer Inaktivität pausiert. Bei re
 - Datensicherung: Einstellungen → „Sicherung herunterladen“ (JSON), regelmäßig in die Cloud legen.
 
 ## Datenschutz
-Ohne Online-Speicher verlassen Kundendaten das Gerät nur in Nachrichten, die Sie selbst senden. Mit Supabase liegen sie in der EU (Frankfurt), Zugriff nur für angemeldete Benutzer. Die Kundendaten im Buchungslink stehen hinter `#`
+Ohne Online-Speicher verlassen Kundendaten das Gerät nur in Nachrichten, die Sie selbst senden. Mit Firestore liegen sie in der EU (Frankfurt), Zugriff nur für die zwei freigeschalteten Konten. Die Kundendaten im Buchungslink stehen hinter `#`
 und werden dadurch nicht an den Webserver übertragen.
 
 QR-Code-Bibliothek: `qrcode.js` von Kazuhiko Arase (MIT-Lizenz).

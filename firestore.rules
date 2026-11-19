@@ -1,0 +1,71 @@
+rules_version = '2';
+// =====================================================================
+// Franzi's Hufpflege – Firestore-Regeln
+// In der Firebase-Konsole: Firestore → Regeln → alles ersetzen → Veröffentlichen.
+// WICHTIG: Unten die zwei E-Mail-Adressen eintragen (klein geschrieben), mit denen
+// ihr euch in der App anmeldet. Nur diese Konten sehen Kunden und Termine.
+// =====================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function team() {
+      return request.auth != null && request.auth.token.email != null
+        && request.auth.token.email.lower() in ['TEAM_EMAIL_1', 'TEAM_EMAIL_2'];
+    }
+
+    // Nur das Team
+    match /settings/{id}  { allow read, write: if team(); }
+    match /customers/{id} { allow read, write: if team(); }
+
+    // Öffentliche Angaben für die Kundenseite (Arbeitszeiten, Puffer, Name …)
+    match /public/info    { allow read: if true; allow write: if team(); }
+
+    // Belegte Zeiten je Tag, OHNE Namen. Kunden dürfen nur genau einen Eintrag anhängen,
+    // und nur zusammen mit ihrer eigenen neuen Buchung.
+    match /busy/{date} {
+      allow read: if true;
+      allow write: if team();
+      allow create, update: if !team() && validBusyAppend(date);
+    }
+
+    // Termine: Team darf alles. Kunden dürfen nur eine neue Online-Buchung anlegen (nicht lesen!).
+    match /appts/{id} {
+      allow read, write: if team();
+      allow create: if !team() && validBooking(id);
+    }
+
+    match /{document=**} { allow read, write: if false; }
+
+    function isDay(d) { return d is string && d.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}'); }
+    function optStr(m, k, max) { return !(k in m) || (m[k] is string && m[k].size() <= max); }
+
+    function validBusyAppend(date) {
+      let n = request.resource.data.iv;
+      let old = resource == null ? [] : resource.data.iv;
+      let newId = n[n.size() - 1].split('-')[2];
+      return isDay(date)
+        && request.resource.data.keys().hasOnly(['iv'])
+        && n is list && n.size() == old.size() + 1 && n.size() <= 80
+        && n.hasAll(old)
+        && getAfter(/databases/$(database)/documents/appts/$(newId)).data.date == date;
+    }
+
+    function validBooking(id) {
+      let d = request.resource.data;
+      let r = d.request;
+      return d.keys().hasOnly(['id', 'customerId', 'date', 'start', 'end', 'horses', 'count', 'note', 'source', 'status', 'request', 'created'])
+        && d.id == id && d.status == 'neu' && d.source == 'kunde' && isDay(d.date)
+        && d.start is int && d.end is int && d.start >= 0 && d.end <= 1440 && d.end > d.start && d.end - d.start <= 720
+        && (d.customerId == null || (d.customerId is string && d.customerId.size() <= 40))
+        && d.horses is list && d.horses.size() <= 20 && d.count is int && d.count <= 50
+        && d.note is string && d.note.size() <= 1000 && d.created is string && d.created.size() <= 40
+        && r is map && r.keys().hasOnly(['i', 'o', 's', 'a', 't', 'e', 'h', 'n'])
+        && r.o is string && r.o.size() > 0 && r.o.size() <= 100
+        && r.t is string && r.t.size() > 0 && r.t.size() <= 40
+        && optStr(r, 'i', 40) && optStr(r, 's', 120) && optStr(r, 'a', 200) && optStr(r, 'e', 120)
+        && (!('h' in r) || (r.h is list && r.h.size() <= 20))
+        && getAfter(/databases/$(database)/documents/busy/$(d.date)).data.iv
+             .hasAny([string(d.start) + '-' + string(d.end) + '-' + id]);
+    }
+  }
+}

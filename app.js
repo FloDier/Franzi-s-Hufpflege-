@@ -150,7 +150,7 @@ function load() {
 function save() {
   localStorage.setItem(KEY, JSON.stringify(data));
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  if (CLOUD && cloud.sess) { queueDiff(); flush(); }
+  if (CLOUD && cloud.user) queueDiff();
 }
 const customerById = id => data.customers.find(c => c.id === id);
 const custLabel = c => c ? (c.stable ? `${c.stable} – ${c.owner}` : c.owner) : '(gelöschter Kunde)';
@@ -158,120 +158,138 @@ const apptLabel = a => { const c = customerById(a.customerId); if (c) return cus
   const r = a.request; return r ? (r.s ? `${r.s} – ${r.o}` : r.o) : '(gelöschter Kunde)'; };
 
 /* =====================================================================
-   Online-Speicher (Supabase): beide Geräte teilen dieselben Daten.
-   Ohne config.js-Eintrag läuft die App rein lokal wie bisher.
+   Online-Speicher (Google Firebase / Firestore): beide Geräte teilen dieselben Daten.
+   Ohne Eintrag in config.js läuft die App rein lokal wie bisher.
+   Datenmodell:
+     settings/main   – Einstellungen (nur Team)
+     public/info     – öffentliche Angaben für die Kundenseite (Arbeitszeiten, Puffer …)
+     customers/{id}  – Kunden (nur Team)
+     appts/{id}      – Termine (nur Team; Kunden dürfen nur neue Online-Buchungen anlegen)
+     busy/{datum}    – belegte Zeiten je Tag OHNE Namen, für die Kundenseite
    ===================================================================== */
 const CFG = window.HUFPFLEGE_CONFIG || {};
-const CLOUD = !!(CFG.supabaseUrl && CFG.supabaseKey);
+const CLOUD = !!(CFG.firebase && CFG.firebase.apiKey && CFG.firebase.projectId);
 const loadJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } };
-class AuthError extends Error {}
-const cloud = {
-  sess: loadJSON(KEY + '-auth', null),
-  setSess(s) { this.sess = s; s ? localStorage.setItem(KEY + '-auth', JSON.stringify(s)) : localStorage.removeItem(KEY + '-auth'); },
-  async authCall(grant, body) {
-    const r = await fetch(`${CFG.supabaseUrl}/auth/v1/token?grant_type=${grant}`, { method: 'POST',
-      headers: { apikey: CFG.supabaseKey, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new AuthError(j.error_description || j.msg || j.message || 'Anmeldung fehlgeschlagen');
-    this.setSess({ access_token: j.access_token, refresh_token: j.refresh_token,
-      expires_at: j.expires_at || Math.floor(Date.now() / 1000) + (j.expires_in || 3600), email: j.user && j.user.email });
-  },
-  login(email, password) { return this.authCall('password', { email, password }); },
-  logout() { this.setSess(null); localStorage.removeItem(KEY + '-shadow'); localStorage.removeItem(KEY + '-outbox'); shadow = null; outbox = []; },
-  async token() {
-    if (!this.sess) throw new AuthError('Nicht angemeldet');
-    if (Date.now() / 1000 > this.sess.expires_at - 60) {
-      try { await this.authCall('refresh_token', { refresh_token: this.sess.refresh_token }); }
-      catch (e) { if (e instanceof AuthError) this.setSess(null); throw e; }
-    }
-    return this.sess.access_token;
-  },
-  async req(method, path, body, { auth = true, prefer } = {}) {
-    const headers = { apikey: CFG.supabaseKey, 'Content-Type': 'application/json' };
-    if (auth) headers.Authorization = 'Bearer ' + await this.token();
-    if (prefer) headers.Prefer = prefer;
-    const r = await fetch(CFG.supabaseUrl + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-    if (r.status === 401 && auth) { this.setSess(null); throw new AuthError('Sitzung abgelaufen'); }
-    const txt = await r.text();
-    if (!r.ok) throw new Error(`Server ${r.status}: ${txt.slice(0, 200)}`);
-    return txt ? JSON.parse(txt) : null;
-  },
-  rpc(name, args) { return this.req('POST', '/rest/v1/rpc/' + name, args || {}, { auth: false }); }
-};
+let FB = null;
+async function fb() {
+  if (FB) return FB;
+  const [appM, fs] = await Promise.all([import('./firebase/firebase-app.js'), import('./firebase/firebase-firestore.js')]);
+  const app = appM.initializeApp(CFG.firebase);
+  let db;
+  try {
+    db = fs.initializeFirestore(app, PAGE === 'verwaltung'
+      ? { ignoreUndefinedProperties: true, localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) }
+      : { ignoreUndefinedProperties: true });
+  } catch (e) { db = fs.initializeFirestore(app, { ignoreUndefinedProperties: true }); }
+  if (CFG.emulator) fs.connectFirestoreEmulator(db, CFG.emulator.host || 'localhost', CFG.emulator.firestorePort);
+  FB = { app, db, fs };
+  if (PAGE === 'verwaltung') {
+    const authM = await import('./firebase/firebase-auth.js');
+    FB.authM = authM; FB.auth = authM.getAuth(app);
+    if (CFG.emulator) authM.connectAuthEmulator(FB.auth, CFG.emulator.authUrl, { disableWarnings: true });
+  }
+  return FB;
+}
+const cloud = { user: null, ready: false };   // user = angemeldeter Benutzer (Franzi oder zweite Person)
 
-/* Änderungen erkennen (Vergleich mit dem letzten Server-Stand) und in eine Warteschlange legen.
-   So geht auch offline nichts verloren: die Warteschlange wird gesendet, sobald wieder Netz da ist. */
-let shadow = loadJSON(KEY + '-shadow', null);
-let outbox = loadJSON(KEY + '-outbox', []);
-let syncState = 'ok', flushing = false;
-const persistSync = () => { localStorage.setItem(KEY + '-shadow', JSON.stringify(shadow)); localStorage.setItem(KEY + '-outbox', JSON.stringify(outbox)); };
+/* Firestore kann keine verschachtelten Listen speichern → Einstellungen als Text, Arbeitszeiten als Objekte */
+const settingsForCloud = s => ({ json: JSON.stringify({ ...s, lastBackup: undefined }) });
+const publicInfo = s => ({
+  name: s.name || '', phone: s.phone || '', mail: s.mail || '',
+  work: s.work.map(w => w ? { s: w[0], e: w[1] } : null), raster: s.raster, minPerHorse: s.minPerHorse, buffer: s.buffer,
+  horizonWeeks: s.horizonWeeks, blocked: (s.blocked || []).filter(d => d >= todayDs()).sort()
+});
+const busyKey = a => `${a.start}-${a.end}-${a.id}`;
+
+/* Änderungen erkennen (Vergleich mit dem letzten Stand aus der Datenbank) und schreiben.
+   Firestore speichert Änderungen ohne Netz zwischen und sendet sie automatisch nach. */
+let shadow = null, syncState = 'ok', pendingWrites = false;
 const snapshot = d => ({
   settings: JSON.stringify({ ...d.settings, lastBackup: undefined }),
   customers: Object.fromEntries(d.customers.map(c => [c.id, JSON.stringify(c)])),
   appts: Object.fromEntries(d.appts.map(a => [a.id, JSON.stringify(a)]))
 });
-function enqueue(op) { outbox = outbox.filter(o => !(o.t === op.t && o.id === op.id)); outbox.push(op); }
 function queueDiff() {
-  const cur = snapshot(data), old = shadow || { settings: null, customers: {}, appts: {} };
-  if (cur.settings !== old.settings) enqueue({ t: 'settings', id: '1', op: 'up' });
+  if (!FB || !cloud.user || !shadow) return;
+  const { fs, db } = FB, cur = snapshot(data), old = shadow, batch = fs.writeBatch(db);
+  const days = new Set(); let n = 0;
+  if (cur.settings !== old.settings) {
+    batch.set(fs.doc(db, 'settings', 'main'), settingsForCloud(data.settings));
+    batch.set(fs.doc(db, 'public', 'info'), publicInfo(data.settings)); n += 2;
+  }
   for (const t of ['customers', 'appts']) {
-    for (const id in cur[t]) if (cur[t][id] !== old[t][id]) enqueue({ t, id, op: 'up' });
-    for (const id in old[t]) if (!(id in cur[t])) enqueue({ t, id, op: 'del' });
+    for (const id in cur[t]) if (cur[t][id] !== old[t][id]) {
+      const obj = JSON.parse(cur[t][id]);
+      batch.set(fs.doc(db, t, id), obj); n++;
+      if (t === 'appts') { days.add(obj.date); if (old.appts[id]) days.add(JSON.parse(old.appts[id]).date); }
+    }
+    for (const id in old[t]) if (!(id in cur[t])) {
+      batch.delete(fs.doc(db, t, id)); n++;
+      if (t === 'appts') days.add(JSON.parse(old.appts[id]).date);
+    }
   }
-  shadow = cur; persistSync();
+  // Belegte Zeiten (ohne Namen) für die Kundenseite aktuell halten
+  for (const d of days) {
+    const iv = data.appts.filter(a => a.date === d).map(busyKey);
+    batch.set(fs.doc(db, 'busy', d), { iv }); n++;
+  }
+  shadow = cur;
+  if (n) batch.commit().catch(e => { console.warn('Speichern fehlgeschlagen:', e); syncState = 'error'; showSyncState(); });
 }
-async function sendOp(o) {
-  const upsert = (t, row) => cloud.req('POST', `/rest/v1/${t}?on_conflict=id`, row, { prefer: 'resolution=merge-duplicates,return=minimal' });
-  const now = new Date().toISOString();
-  if (o.op === 'del') return cloud.req('DELETE', `/rest/v1/${o.t}?id=eq.${encodeURIComponent(o.id)}`, undefined, { prefer: 'return=minimal' });
-  if (o.t === 'settings') return upsert('settings', { id: 1, data: { ...data.settings, lastBackup: undefined }, updated_at: now });
-  if (o.t === 'customers') { const c = customerById(o.id); return c && upsert('customers', { id: c.id, data: c, updated_at: now }); }
-  const a = data.appts.find(x => x.id === o.id);
-  return a && upsert('appts', { id: a.id, customer_id: a.customerId || null, day: a.date, start_min: a.start, end_min: a.end,
-    status: a.status || 'bestätigt', data: a, updated_at: now });
-}
-async function flush() {
-  if (!CLOUD || flushing) return;
-  flushing = true;
-  try {
-    while (outbox.length) { await sendOp(outbox[0]); outbox.shift(); persistSync(); }
-    syncState = 'ok';
-  } catch (e) {
-    syncState = e instanceof AuthError ? 'auth' : 'offline';
-    console.warn('Sync:', e.message);
-    if (e instanceof AuthError) render();
-  } finally { flushing = false; showSyncState(); }
-}
-/* Server-Stand holen. Erst wenn alle eigenen Änderungen gesendet sind, damit nichts überschrieben wird. */
-async function pull() {
-  if (!CLOUD || !cloud.sess) return;
-  await flush();
-  if (outbox.length) return;
-  let st, cs, as;
-  try {
-    [st, cs, as] = await Promise.all([cloud.req('GET', '/rest/v1/settings?select=data&id=eq.1'),
-      cloud.req('GET', '/rest/v1/customers?select=data'), cloud.req('GET', '/rest/v1/appts?select=*')]);
-  } catch (e) { syncState = e instanceof AuthError ? 'auth' : 'offline'; showSyncState(); if (e instanceof AuthError) render(); return; }
-  const server = {
-    settings: st[0] ? { ...DEFAULT_SETTINGS, ...st[0].data, lastBackup: data.settings.lastBackup } : data.settings,
-    customers: cs.map(r => r.data),
-    appts: as.map(r => ({ ...r.data, id: r.id, customerId: r.customer_id || null, date: r.day, start: r.start_min, end: r.end_min, status: r.status }))
+
+/* Live-Abgleich: Änderungen vom anderen Gerät kommen sofort an */
+let unsubs = [];
+async function startSync(localBefore) {
+  const { fs, db } = FB;
+  unsubs.forEach(u => u()); unsubs = [];
+  const got = { customers: null, appts: null, settings: undefined };
+  let first = true;
+  const apply = () => {
+    if (got.customers === null || got.appts === null || got.settings === undefined) return;
+    const before = JSON.stringify(data);
+    data = {
+      customers: got.customers, appts: got.appts,
+      settings: got.settings ? { ...DEFAULT_SETTINGS, ...got.settings, lastBackup: data.settings.lastBackup } : data.settings
+    };
+    shadow = snapshot(data);
+    if (!got.settings) shadow.settings = null;          // noch keine Einstellungen online → hochladen
+    if (first) {
+      first = false;
+      // Erste Anmeldung auf diesem Gerät: lokale Daten, die online noch fehlen, hochladen
+      const migKey = KEY + '-fbmig-' + cloud.user.uid;
+      if (localBefore && !localStorage.getItem(migKey)) {
+        const has = (list, id) => list.some(x => x.id === id);
+        data.customers.push(...localBefore.customers.filter(c => !has(data.customers, c.id)));
+        data.appts.push(...localBefore.appts.filter(a => !has(data.appts, a.id)));
+        if (!got.settings) data.settings = { ...DEFAULT_SETTINGS, ...localBefore.settings };
+        localStorage.setItem(migKey, '1');
+      }
+      queueDiff();
+      // Kundenseite: öffentliche Angaben + Belegt-Zeiten einmal komplett neu schreiben
+      const batch = fs.writeBatch(db);
+      batch.set(fs.doc(db, 'public', 'info'), publicInfo(data.settings));
+      const days = [...new Set(data.appts.filter(a => a.date >= todayDs()).map(a => a.date))];
+      for (const d of days) batch.set(fs.doc(db, 'busy', d), { iv: data.appts.filter(a => a.date === d).map(busyKey) });
+      batch.commit().catch(e => console.warn(e));
+    }
+    localStorage.setItem(KEY, JSON.stringify(data));
+    if (JSON.stringify(data) !== before) safeRender();
   };
-  const first = !shadow;
-  const serverSnap = snapshot(server);
-  if (first) {
-    // Erste Anmeldung auf diesem Gerät: lokale Daten, die online noch fehlen, werden hochgeladen.
-    const has = (list, id) => list.some(x => x.id === id);
-    server.customers.push(...data.customers.filter(c => !has(server.customers, c.id)));
-    server.appts.push(...data.appts.filter(a => !has(server.appts, a.id)));
-    if (!st[0]) serverSnap.settings = null;
-  }
-  const before = JSON.stringify(data);
-  data = server; shadow = serverSnap;
-  localStorage.setItem(KEY, JSON.stringify(data));
-  queueDiff(); flush();
-  syncState = 'ok'; showSyncState();
-  if (JSON.stringify(data) !== before) safeRender();
+  const onMeta = snap => { pendingWrites = snap.metadata.hasPendingWrites; syncState = snap.metadata.fromCache ? 'offline' : 'ok'; showSyncState(); };
+  const onErr = e => { console.warn('Abgleich:', e); syncState = e.code === 'permission-denied' ? 'denied' : 'error'; showSyncState(); if (syncState === 'denied') render(); };
+  unsubs.push(fs.onSnapshot(fs.collection(db, 'customers'), { includeMetadataChanges: true }, s => { got.customers = s.docs.map(d => d.data()); onMeta(s); apply(); }, onErr));
+  unsubs.push(fs.onSnapshot(fs.collection(db, 'appts'), { includeMetadataChanges: true }, s => { got.appts = s.docs.map(d => ({ ...d.data(), id: d.id })); onMeta(s); apply(); }, onErr));
+  unsubs.push(fs.onSnapshot(fs.doc(db, 'settings', 'main'), { includeMetadataChanges: true }, s => {
+    got.settings = s.exists() ? JSON.parse(s.data().json) : null; onMeta(s); apply(); }, onErr));
+}
+async function cloudLogin(email, pw) {
+  const { authM, auth } = await fb();
+  await authM.signInWithEmailAndPassword(auth, email, pw);
+}
+async function cloudLogout() {
+  const { authM, auth } = await fb();
+  unsubs.forEach(u => u()); unsubs = []; shadow = null;
+  await authM.signOut(auth);
 }
 /* Nicht neu zeichnen, während jemand gerade tippt */
 let renderPending = false;
@@ -282,9 +300,11 @@ function safeRender() {
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (renderPending) safeRender(); }, 300));
 function showSyncState() {
-  const el = $('#subtitle'); if (!el || !CLOUD || !cloud.sess || mode !== 'owner') return;
-  el.textContent = syncState === 'ok' ? (outbox.length ? '⏳ wird gespeichert …' : '✓ synchronisiert')
-    : syncState === 'offline' ? `⚠️ offline – ${outbox.length} Änderung(en) warten` : '⚠️ bitte neu anmelden';
+  const el = $('#subtitle'); if (!el || !CLOUD || !cloud.user || mode !== 'owner') return;
+  el.textContent = syncState === 'denied' ? '⛔ Kein Zugriff – Konto nicht freigeschaltet'
+    : syncState === 'error' ? '⚠️ Fehler beim Speichern'
+    : syncState === 'offline' ? '⚠️ offline – Änderungen werden später gesendet'
+    : pendingWrites ? '⏳ wird gespeichert …' : '✓ synchronisiert';
 }
 
 function ownerAvailability(excludeApptId) {
@@ -337,7 +357,8 @@ function renderTabs() {
 function render() {
   $('#title').textContent = data.settings.name || "Franzi's Hufpflege";
   $('#subtitle').textContent = 'Kunden & Terminplanung';
-  if (CLOUD && !cloud.sess) return renderLogin();
+  if (CLOUD && !cloud.ready) { if ($('#tabs')) $('#tabs').style.display = 'none'; $('#app').innerHTML = '<div class="card">Wird geladen …</div>'; return; }
+  if (CLOUD && !cloud.user) return renderLogin();
   $('#tabs').style.display = '';
   renderTabs(); showSyncState();
   $('#app').onchange = null;
@@ -368,13 +389,12 @@ function renderLogin() {
     e.preventDefault();
     const btn = $('#loginForm button'); btn.disabled = true; $('#lErr').textContent = '';
     try {
-      const prev = loadJSON(KEY + '-lastuser', null), email = $('#lMail').value.trim();
-      await cloud.login(email, $('#lPw').value);
-      if (prev && prev !== email) { shadow = null; outbox = []; }
-      localStorage.setItem(KEY + '-lastuser', JSON.stringify(email));
-      render(); await pull(); toast('Angemeldet');
+      await cloudLogin($('#lMail').value.trim(), $('#lPw').value);
+      toast('Angemeldet');   // Rest erledigt onAuthStateChanged
     } catch (err) {
-      $('#lErr').textContent = err instanceof AuthError ? 'E-Mail oder Passwort falsch.' : 'Keine Verbindung zum Server.';
+      const c = err.code || '';
+      $('#lErr').textContent = /network/.test(c) ? 'Keine Verbindung zum Server.'
+        : /too-many/.test(c) ? 'Zu viele Versuche – bitte kurz warten.' : 'E-Mail oder Passwort falsch.';
       btn.disabled = false;
     }
   };
@@ -509,7 +529,7 @@ function openApptEditor(presetCustomerId, editId) {
       if (clash.length && !confirm(`Achtung: überschneidet sich mit ${clash.map(a => fmtTime(a.start) + ' ' + apptLabel(a)).join(', ')}. Trotzdem speichern?`)) return;
       let appt;
       if (editing) { appt = editing; Object.assign(appt, { customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note }); }
-      else { appt = { id: uid(), customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note, created: new Date().toISOString(), source: 'betrieb' }; data.appts.push(appt); }
+      else { appt = { id: uid(), customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note, created: new Date().toISOString(), source: 'betrieb', status: 'bestätigt' }; data.appts.push(appt); }
       save(); tab = 'termine'; render(); openSend(appt.id); toast('Termin gespeichert');
     };
     renderHorses(); showTimes(); check();
@@ -697,10 +717,9 @@ function renderEinstellungen() {
     <div class="card"><h2>Freie Tage / Urlaub</h2>
       <div class="row"><input type="date" id="bFrom"> bis <input type="date" id="bTo"><button id="bAdd">Sperren</button></div>
       <div id="bList" style="margin-top:8px">${s.blocked.filter(d => d >= todayDs()).sort().map(d => `<span class="pill" style="margin:2px">${fmtDate(d)} <a href="#" data-unblock="${d}">✕</a></span>`).join('') || '<span class="muted small">Keine gesperrten Tage.</span>'}</div></div>
-    ${CLOUD ? `<div class="card"><h2>Online-Konto</h2><p class="small">Angemeldet als <b>${esc(cloud.sess && cloud.sess.email)}</b><br>
-      <span class="muted">Kunden und Termine werden automatisch mit dem zweiten Gerät abgeglichen.</span></p>
-      <div class="row"><button onclick="pull().then(()=>toast('Abgeglichen'))">🔄 Jetzt abgleichen</button>
-      <button class="danger" onclick="if(outbox.length&&!confirm('Es gibt noch nicht gesendete Änderungen. Trotzdem abmelden?'))return;cloud.logout();render()">Abmelden</button></div></div>` : ''}
+    ${CLOUD ? `<div class="card"><h2>Online-Konto</h2><p class="small">Angemeldet als <b>${esc(cloud.user && cloud.user.email)}</b><br>
+      <span class="muted">Kunden und Termine werden sofort mit dem zweiten Gerät abgeglichen – auch ohne Netz wird weitergearbeitet.</span></p>
+      <div class="row"><button class="danger" onclick="if(pendingWrites&&!confirm('Es gibt noch nicht gesendete Änderungen. Trotzdem abmelden?'))return;cloudLogout()">Abmelden</button></div></div>` : ''}
     <div class="card"><h2>Datensicherung</h2>
       <p class="muted small">${CLOUD ? 'Die Daten liegen online und auf Ihren Geräten. Eine zusätzliche Sicherung schadet trotzdem nicht.'
       : 'Alle Daten liegen ausschließlich in diesem Browser auf diesem Gerät. Wird der Browser-Speicher gelöscht, sind sie weg.'}
@@ -766,7 +785,7 @@ function ensureCustomerFrom(rc, horses) {
     ownerAddr: '', phone: String(rc.t || ''), mail: String(rc.e || ''), route: '', note: '', horses: horses.map(name => ({ name, info: '' })) };
   data.customers.push(cust); return cust;
 }
-/* Online-Buchung (Supabase) bestätigen / ablehnen */
+/* Online-Buchung bestätigen / ablehnen */
 function confirmOnline(id) {
   const a = data.appts.find(x => x.id === id); if (!a) return;
   const horses = (a.horses || []).map(String).filter(Boolean);
@@ -835,7 +854,8 @@ async function renderCustomer(packed, live) {
     $('#app').innerHTML = '<div class="card">Freie Termine werden geladen …</div>';
     let info, pre = null;
     try { if (packed) pre = (await unpack(packed)).c || null; } catch (e) { pre = null; }
-    try { info = await cloud.rpc('get_booking_info'); } catch (e) {
+    try { info = await loadBookingInfo(); } catch (e) {
+      console.warn(e);
       $('#app').innerHTML = `<div class="card"><h2>Keine Verbindung</h2><p>Die freien Termine konnten nicht geladen werden. Bitte prüfen Sie Ihre Internetverbindung.</p>
         <button onclick="location.reload()">Erneut versuchen</button></div>`; return; }
     if (!info.ok) { $('#app').innerHTML = `<div class="card">${esc(info.error)}</div>`; return; }
@@ -920,7 +940,7 @@ async function renderCustomer(packed, live) {
         const g2 = readGuest(), note = $('#gNote').value.trim(), end = st.start + duration();
         if (!pre) localStorage.setItem(guestKey, JSON.stringify({ o: g2.o, t: g2.t, s: g2.s, e: g2.e, a: g2.a, hn: g2.hn, count: st.count }));
         let res;
-        try { res = await cloud.rpc('book_slot', { p_day: st.date, p_start: st.start, p_end: end, p_customer: { ...g2, hn: undefined }, p_note: note }); }
+        try { res = await bookSlot(st.date, st.start, end, { ...g2, hn: undefined }, note, p.b); }
         catch (e) { btn.disabled = false; btn.textContent = '✅ Termin verbindlich buchen'; alert('Keine Verbindung – bitte erneut versuchen.'); return; }
         if (!res.ok) {
           if (res.error === 'belegt') { alert('Diese Uhrzeit wurde gerade vergeben. Bitte wählen Sie eine andere.'); return renderCustomer(packed, true); }
@@ -1001,12 +1021,53 @@ async function boot() {
   if (h.startsWith('#b=') || h.startsWith('#live')) return location.replace(customerUrl() + h);
   render();
   if (CLOUD) {
-    pull();
-    setInterval(() => { if (!document.hidden) pull(); }, 30000);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(); });
-    window.addEventListener('online', () => pull());
+    try { await fb(); } catch (e) { cloud.ready = true; $('#app').innerHTML = '<div class="card">Verbindung zum Online-Speicher nicht möglich. Bitte Seite neu laden.</div>'; return; }
+    FB.authM.onAuthStateChanged(FB.auth, user => {
+      cloud.user = user; cloud.ready = true;
+      if (user) startSync(structuredClone(data)); else { unsubs.forEach(u => u()); unsubs = []; shadow = null; }
+      render();
+    });
   }
   if (h.startsWith('#r=')) { const packed = h.slice(3); history.replaceState(null, '', ownerUrl()); await handleRequest(packed); }
+}
+
+/* ---------- Kundenseite ↔ Firestore ---------- */
+async function loadBookingInfo() {
+  const { fs, db } = await fb();
+  const pi = await fs.getDoc(fs.doc(db, 'public', 'info'));
+  if (!pi.exists()) return { ok: false, error: 'Online-Buchung ist noch nicht eingerichtet.' };
+  const i = pi.data(), today = todayDs(), to = addDays(today, (i.horizonWeeks || 8) * 7);
+  const q = fs.query(fs.collection(db, 'busy'), fs.where(fs.documentId(), '>=', today), fs.where(fs.documentId(), '<=', to));
+  const busy = [];
+  (await fs.getDocs(q)).forEach(d => (d.data().iv || []).forEach(k => { const [a, b] = k.split('-').map(Number); busy.push([d.id, a, b]); }));
+  return { ok: true, today, name: i.name, phone: i.phone, mail: i.mail, work: (i.work || []).map(w => w ? [w.s, w.e] : null),
+    raster: i.raster, minPerHorse: i.minPerHorse, buffer: i.buffer, horizonWeeks: i.horizonWeeks || 8, blocked: i.blocked || [], busy };
+}
+/* Buchen als Transaktion: Tag lesen, auf Überschneidung prüfen, Termin + Belegt-Eintrag gemeinsam schreiben.
+   Buchen zwei Kunden gleichzeitig, wiederholt Firestore die Prüfung → der zweite bekommt „belegt“. */
+async function bookSlot(date, start, end, cust, note, buffer) {
+  const { fs, db } = await fb();
+  const id = 'k' + uid();
+  const clean = o => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ''));
+  const request = clean({ i: cust.i, o: String(cust.o || '').slice(0, 100), s: cust.s, a: cust.a, t: String(cust.t || '').slice(0, 40), e: cust.e,
+    h: (cust.h || []).slice(0, 20), n: cust.n });
+  // Bei gleichzeitigen Buchungen lehnt Firestore die zweite ab → mit frischem Stand erneut prüfen
+  for (let attempt = 0; ; attempt++) try {
+    await fs.runTransaction(db, async tx => {
+      const ref = fs.doc(db, 'busy', date), snap = await tx.get(ref);
+      const iv = snap.exists() ? (snap.data().iv || []) : [];
+      const clash = iv.some(k => { const [a, b] = k.split('-').map(Number); return start < b + buffer && end + buffer > a; });
+      if (clash) throw new Error('belegt');
+      tx.set(fs.doc(db, 'appts', id), { id, customerId: cust.i || null, date, start, end, horses: request.h || [], count: Math.max(1, Number(cust.n) || (request.h || []).length || 1),
+        note: String(note || '').slice(0, 1000), source: 'kunde', status: 'neu', request, created: new Date().toISOString() });
+      tx.set(ref, { iv: [...iv, `${start}-${end}-${id}`] });
+    });
+    return { ok: true, id };
+  } catch (e) {
+    if (e.message === 'belegt') return { ok: false, error: 'belegt' };
+    if (attempt >= 2) throw e;
+    await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
+  }
 }
 
 /* =====================================================================
@@ -1080,7 +1141,7 @@ function renderLegal(which) {
       GitHub ist unter dem EU-US Data Privacy Framework zertifiziert.</p>
       <h3>3. Online-Terminbuchung</h3><p>Wenn Sie einen Termin buchen, verarbeiten wir Name, Telefonnummer, ggf. E-Mail, Name und Anschrift des Stalls,
       Anzahl und Namen der Pferde, gewünschten Termin und Ihre Nachricht. Zweck ist die Vereinbarung und Durchführung des Termins (Art. 6 Abs. 1 lit. b DSGVO).
-      ${CLOUD ? 'Die Daten werden bei Supabase (Supabase Inc.) auf Servern in Frankfurt am Main (EU) gespeichert; mit dem Anbieter besteht ein Vertrag zur Auftragsverarbeitung.' : 'Die Buchung wird per WhatsApp oder E-Mail an uns übermittelt.'}
+      ${CLOUD ? 'Die Daten werden in Google Firebase (Google Ireland Ltd.) auf Servern in Frankfurt am Main (EU) gespeichert; mit dem Anbieter besteht ein Vertrag zur Auftragsverarbeitung.' : 'Die Buchung wird per WhatsApp oder E-Mail an uns übermittelt.'}
       Damit Sie Ihre Angaben nicht erneut eintippen müssen, werden sie zusätzlich nur in Ihrem eigenen Browser gespeichert (lokaler Speicher); Sie können sie über die Browser-Einstellungen löschen.</p>
       <h3>4. Kontakt per Telefon, E-Mail oder WhatsApp</h3><p>Wenn Sie uns kontaktieren, verarbeiten wir Ihre Angaben zur Bearbeitung der Anfrage (Art. 6 Abs. 1 lit. b bzw. f DSGVO).
       Bei WhatsApp gelten zusätzlich die Datenschutzbestimmungen von WhatsApp (Meta Platforms Ireland Ltd.).</p>

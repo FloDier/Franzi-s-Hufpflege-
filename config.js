@@ -1,7 +1,8 @@
-/* Online-Speicher (Supabase). Leer lassen = App läuft nur lokal auf einem Gerät.
-   Beide Werte stehen in Supabase unter: Project Settings → API (bzw. "API Keys").
-   Der "anon"/"publishable" Schlüssel ist für die Veröffentlichung gedacht – geschützt wird über die Regeln in supabase/setup.sql. */
+/* Online-Speicher (Google Firebase / Firestore).
+   Leer lassen (firebase: null) = App läuft nur lokal auf einem Gerät.
+   Werte aus der Firebase-Konsole: Projekteinstellungen → Allgemein → „Meine Apps“ → Web-App → SDK-Konfiguration.
+   Diese Werte dürfen öffentlich sein – geschützt wird über die Regeln in firestore.rules. */
 window.HUFPFLEGE_CONFIG = {
-  supabaseUrl: '',   // z. B. 'https://abcdefgh.supabase.co'
-  supabaseKey: ''    // anon / publishable key
+  firebase: null
+  // firebase: { apiKey: '…', authDomain: '…', projectId: '…', storageBucket: '…', messagingSenderId: '…', appId: '…' }
 };
