@@ -549,6 +549,7 @@ function renderKunden() {
   const q = custSearch.toLowerCase();
   const list = [...data.customers].filter(c => !q || JSON.stringify(c).toLowerCase().includes(q)).sort((a, b) => custLabel(a).localeCompare(custLabel(b)));
   $('#app').innerHTML = `${backupBanner()}
+    <button class="primary big" style="margin-bottom:10px" onclick="openCustomerEditor()">➕ Neuen Kunden anlegen</button>
     <input id="cSearch" style="width:100%;margin-bottom:12px" placeholder="🔍 Suchen (Name, Stall, Pferd, Ort …)" value="${esc(custSearch)}">
     <div id="cList">${list.length ? list.map(c => {
       const next = data.appts.filter(a => a.customerId === c.id && a.date >= todayDs()).sort((a, b) => a.date.localeCompare(b.date))[0];
