@@ -239,6 +239,7 @@ function queueDiff() {
 
 /* Live-Abgleich: Änderungen vom anderen Gerät kommen sofort an */
 let unsubs = [];
+const dataListeners = new Set();
 async function startSync(localBefore) {
   const { fs, db } = FB;
   unsubs.forEach(u => u()); unsubs = [];
@@ -273,7 +274,7 @@ async function startSync(localBefore) {
       batch.commit().catch(e => console.warn(e));
     }
     localStorage.setItem(KEY, JSON.stringify(data));
-    if (JSON.stringify(data) !== before) safeRender();
+    if (JSON.stringify(data) !== before) { safeRender(); dataListeners.forEach(f => f()); }
   };
   const onMeta = snap => { pendingWrites = snap.metadata.hasPendingWrites; syncState = snap.metadata.fromCache ? 'offline' : 'ok'; showSyncState(); };
   const onErr = e => { console.warn('Abgleich:', e); syncState = e.code === 'permission-denied' ? 'denied' : 'error'; showSyncState(); if (syncState === 'denied') render(); };
@@ -477,7 +478,7 @@ function openApptEditor(presetCustomerId, editId) {
     date: editing ? editing.date : null, start: editing ? editing.start : null,
     note: editing ? editing.note || '' : ''
   };
-  const avail = ownerAvailability(editId);
+  let avail = ownerAvailability(editId);
   const custOptions = () => '<option value="">– Kunde wählen –</option>' + [...data.customers].sort((a, b) => custLabel(a).localeCompare(custLabel(b)))
     .map(c => `<option value="${c.id}" ${c.id === st.customerId ? 'selected' : ''}>${esc(custLabel(c))}</option>`).join('');
 
@@ -533,6 +534,12 @@ function openApptEditor(presetCustomerId, editId) {
       save(); tab = 'termine'; render(); openSend(appt.id); toast('Termin gespeichert');
     };
     renderHorses(); showTimes(); check();
+    // Bucht inzwischen ein Kunde oder das zweite Gerät, Kalender sofort aktualisieren
+    const refresh = () => { if (!$('#eCal', body)) return; avail = ownerAvailability(editId);
+      if (st.start !== null && !avail.starts(st.date, st.duration).includes(st.start) && !$('#eManual', body).value) { st.start = null; toast('Die gewählte Uhrzeit ist inzwischen belegt'); }
+      cal.refresh(); showTimes(); check(); };
+    dataListeners.add(refresh);
+    $('#modal').addEventListener('close', () => dataListeners.delete(refresh), { once: true });
   });
 }
 
@@ -871,10 +878,11 @@ async function renderCustomer(packed, live) {
   document.title = $('#title').textContent;
   const from = `${p.f.slice(0, 4)}-${p.f.slice(4, 6)}-${p.f.slice(6, 8)}`, to = addDays(from, p.d - 1);
   if (to < todayDs()) { $('#app').innerHTML = `<div class="card"><h2>Link abgelaufen</h2><p>Bitte fordern Sie bei ${esc(p.n)} einen aktuellen Buchungslink an.</p></div>`; return; }
-  const busy = {};
-  for (const [off, s, e] of p.o || []) (busy[addDays(from, off)] ||= []).push([s * 5, e * 5]);
-  const avail = makeAvailability({ work: p.w.map(x => x ? [x[0] * 5, x[1] * 5] : null), raster: p.r, buffer: p.b,
+  const initialBusy = {};
+  for (const [off, s, e] of p.o || []) (initialBusy[addDays(from, off)] ||= []).push([s * 5, e * 5]);
+  const makeAvail = busy => makeAvailability({ work: p.w.map(x => x ? [x[0] * 5, x[1] * 5] : null), raster: p.r, buffer: p.b,
     blocked: (p.x || []).map(o => addDays(from, o)), busy, from: from > todayDs() ? from : todayDs(), to });
+  let avail = makeAvail(initialBusy);
   const pre = p.c || null;
   const guestKey = 'stalltermine-gast';
   const guest = pre ? {} : (JSON.parse(localStorage.getItem(guestKey) || '{}'));
@@ -991,6 +999,23 @@ ${link}`;
     if (e.target.type === 'checkbox') { st.horses = $$('.chk input:checked', app).map(i => i.value); st.count = st.horses.length; cal.refresh(); showTimes(); update(); }
   });
   if (!firstFree) $('#gCal').insertAdjacentHTML('beforeend', '<p class="muted small">Im angebotenen Zeitraum ist leider nichts mehr frei.</p>');
+  // Live: bucht jemand anderes, verschwindet die Zeit sofort (nicht mehr grün, nicht mehr wählbar)
+  if (live && CLOUD) {
+    const { fs, db } = await fb();
+    const q = fs.query(fs.collection(db, 'busy'), fs.where(fs.documentId(), '>=', todayDs()), fs.where(fs.documentId(), '<=', to));
+    const unsub = fs.onSnapshot(q, snap => {
+      if (!$('#gCal')) return unsub();                     // Seite schon weiter (z. B. gebucht)
+      const busy = {};
+      snap.forEach(d => (d.data().iv || []).forEach(k => { const [a, b] = k.split('-').map(Number); (busy[d.id] ||= []).push([a, b]); }));
+      avail = makeAvail(busy);
+      const hadTime = st.start;
+      cal.refresh(); showTimes();
+      if (hadTime !== null && st.start === null) {
+        $('#gTimes').insertAdjacentHTML('afterbegin', '<div class="banner">⚠️ Die gewählte Uhrzeit wurde soeben vergeben – bitte wählen Sie eine andere.</div>');
+      }
+      update();
+    }, e => console.warn('Live-Aktualisierung:', e));
+  }
   update();
 }
 
