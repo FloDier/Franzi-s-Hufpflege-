@@ -4,7 +4,7 @@ Web-App für Kundenverwaltung (Stall, Besitzer, Pferde, Anfahrt) und Terminbuchu
 Läuft komplett im Browser, ohne Server, ohne Konto. Daten liegen lokal im Browser-Speicher des Geräts.
 
 ## Starten
-- Über GitHub Pages: `https://flodier.github.io/franzi-s-hufpflege-/` (GitHub Pages im Repo unter Settings → Pages aktivieren, Branch `main`)
+- Über GitHub Pages: `https://flodier.github.io/Franzi-s-Hufpflege-/` (Groß-/Kleinschreibung beachten! GitHub Pages im Repo unter Settings → Pages aktivieren, Branch `main`)
 - Auf dem iPhone/Android: Seite öffnen → „Zum Home-Bildschirm“. Das ist auf dem iPhone wichtig, weil Safari den Speicher
   von Webseiten löschen kann, die länger als 7 Tage nicht besucht wurden.
 
