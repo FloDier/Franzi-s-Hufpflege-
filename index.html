@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Franzis Hufpflege">
+<meta name="theme-color" content="#0b2318">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="logo-96.png">
+<title>Franzi's Hufpflege</title>
+<style>
+  :root {
+    --bg: #f5f5f0; --card: #fff; --text: #1c1917; --muted: #78716c; --line: #e7e5e4;
+    --brand: #164a2e; --brand2: #0b2318; --gold: #d6b25e; --gold-soft: #f3e3b5;
+    --free: #16a34a; --free-bg: #dcfce7; --free-line: #86efac;
+    --off-bg: #f1f1ef; --off: #a8a29e; --danger: #b91c1c; --wa: #25d366;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--brand2); color: var(--text);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  /* Hintergrund: Logo, abgedunkelt, damit Inhalte lesbar bleiben (fixed per Pseudo-Element, funktioniert auch auf iOS) */
+  body::before { content: ""; position: fixed; inset: 0; z-index: -1;
+    background: linear-gradient(rgba(8, 26, 18, .80), rgba(8, 26, 18, .88)), url("hintergrund.jpg") center / cover no-repeat; }
+  header.top { background: var(--brand2); color: var(--gold); border-bottom: 1px solid rgba(214,178,94,.45);
+    display: flex; align-items: center; gap: 12px; padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+    position: sticky; top: 0; z-index: 5; }
+  header.top img { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--gold); flex: none; }
+  header.top h1 { margin: 0; font-size: 20px; font-family: Georgia, "Times New Roman", serif; font-weight: 500; letter-spacing: .01em; }
+  header.top small { color: var(--gold-soft); opacity: .85; }
+  nav.tabs { display: flex; gap: 4px; padding: 8px; background: rgba(11,35,24,.95); border-bottom: 1px solid rgba(214,178,94,.3);
+    position: sticky; top: 68px; z-index: 4; overflow-x: auto; }
+  nav.tabs button { flex: 1; border: 0; background: none; padding: 10px 8px; border-radius: 10px; font-size: 14px;
+    color: var(--gold-soft); white-space: nowrap; cursor: pointer; }
+  nav.tabs button.active { background: var(--gold); color: var(--brand2); font-weight: 600; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 12px 96px; }
+  h2 { font-size: 18px; margin: 4px 0 12px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: var(--gold); text-transform: uppercase; letter-spacing: .04em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .small { font-size: 13px; }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--off-bg); color: var(--muted); }
+  .pill.green { background: var(--free-bg); color: var(--brand); }
+  button, .btn { font: inherit; border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 10px;
+    padding: 9px 13px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-size: 15px; }
+  button.primary, .btn.primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+  button.wa, .btn.wa { background: var(--wa); color: #fff; border-color: var(--wa); }
+  button.danger { color: var(--danger); }
+  button.big, .btn.big { width: 100%; justify-content: center; padding: 14px; font-size: 17px; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  label.f { display: block; margin-bottom: 10px; font-size: 14px; color: var(--muted); }
+  label.f > input, label.f > textarea, label.f > select { display: block; width: 100%; margin-top: 4px; }
+  input, textarea, select { font: inherit; font-size: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
+    background: #fff; color: var(--text); }
+  textarea { min-height: 70px; resize: vertical; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+  button.primary.fab { background: var(--gold); border-color: var(--gold); color: var(--brand2); }
+  .fab { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 6; border-radius: 99px;
+    padding: 14px 20px; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.2); }
+
+  /* Kalender */
+  .cal { user-select: none; }
+  .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .cal-head button { padding: 6px 14px; font-size: 18px; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+  .cal-wd { text-align: center; font-size: 12px; color: var(--muted); padding-bottom: 2px; }
+  .cal-day { aspect-ratio: 1 / 1; padding: 0; justify-content: center; font-size: 15px; border-radius: 10px; }
+  .cal-day.free { background: var(--free-bg); border-color: var(--free-line); color: var(--brand); font-weight: 600; }
+  .cal-day.off { background: var(--off-bg); color: var(--off); border-color: transparent; }
+  .cal-day.today { outline: 2px solid #a3a3a3; outline-offset: -2px; }
+  .cal-day.sel { background: var(--free); color: #fff; border-color: var(--free); }
+  .cal-day:disabled { opacity: 1; cursor: default; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+  .times { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 6px; }
+  .time { justify-content: center; background: var(--free-bg); border-color: var(--free-line); color: var(--brand); font-weight: 600; }
+  .time.sel { background: var(--free); color: #fff; border-color: var(--free); }
+
+  .appt { display: flex; gap: 12px; }
+  .appt .t { font-weight: 700; min-width: 54px; color: var(--brand); }
+  .daylabel { font-weight: 600; margin: 16px 2px 6px; color: var(--gold-soft); }
+  main > .muted, main > p.muted { color: var(--gold-soft); }
+  .hero { text-align: center; color: var(--gold-soft); margin: 4px 0 16px; }
+  .hero img { width: 150px; height: 150px; border-radius: 50%; box-shadow: 0 8px 30px rgba(0,0,0,.5); border: 2px solid var(--gold); }
+  .qr { background: #fff; padding: 12px; border-radius: 12px; display: inline-block; border: 1px solid var(--line); }
+  .qr svg, .qr img { display: block; width: 260px; max-width: 100%; height: auto; }
+  .banner { background: #fef3c7; border: 1px solid #fcd34d; color: #78350f; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+  .steps { counter-reset: s; }
+  .step { position: relative; padding-left: 38px; }
+  .step::before { counter-increment: s; content: counter(s); position: absolute; left: 0; top: 14px; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--gold); color: var(--brand2); font-weight: 700; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+  .step > .card { margin-left: 0; }
+  .horse-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  .chk { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+  .chk input { width: 20px; height: 20px; }
+
+  dialog { border: 0; border-radius: 16px; padding: 0; width: min(640px, 96vw); max-height: 92vh; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: #fff; z-index: 2; }
+  .modal-head h2 { margin: 0; }
+  #modal-body { padding: 14px; }
+  #toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: #1c1917; color: #fff; padding: 10px 16px;
+    border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 100; font-size: 14px; max-width: 90vw; }
+  #toast.show { opacity: 1; }
+  @media print {
+    body::before { display: none; } body { background: #fff; }
+    header.top, nav.tabs, .noprint, .fab { display: none !important; }
+    .card { border: 0; }
+    .qr svg { width: 9cm; }
+  }
+</style>
+</head>
+<body>
+<header class="top"><img src="logo-96.png" alt=""><div><h1 id="title">Franzi's Hufpflege</h1><small id="subtitle"></small></div></header>
+<nav class="tabs" id="tabs"></nav>
+<main id="app"></main>
+
+<dialog id="modal">
+  <div class="modal-head"><h2 id="modal-title"></h2><button onclick="closeModal()" aria-label="Schließen">✕</button></div>
+  <div id="modal-body"></div>
+</dialog>
+<div id="toast"></div>
+
+<script src="qrcode.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   Grundlagen / Helfer
+   ===================================================================== */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const WD_SHORT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+const WD_LONG = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+
+const pad = n => String(n).padStart(2, '0');
+const ds = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseDs = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = parseDs(s); d.setDate(d.getDate() + n); return ds(d); };
+const dayDiff = (a, b) => { const A = parseDs(a), B = parseDs(b);
+  return Math.round((Date.UTC(B.getFullYear(), B.getMonth(), B.getDate()) - Date.UTC(A.getFullYear(), A.getMonth(), A.getDate())) / 864e5); };
+const todayDs = () => ds(new Date());
+const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const fmtTime = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const parseTime = t => { if (!t) return null; const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const fmtDate = s => { const d = parseDs(s); return `${WD_SHORT[d.getDay()]}, ${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`; };
+const fmtDateLong = s => { const d = parseDs(s); return `${WD_LONG[d.getDay()]}, ${d.getDate()}. ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
+const mapsUrl = addr => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(addr);
+const baseUrl = () => location.origin + location.pathname;
+
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2600); }
+function openModal(title, html, onMount) { $('#modal-title').textContent = title; $('#modal-body').innerHTML = html; const d = $('#modal'); if (!d.open) d.showModal(); d.scrollTop = 0; onMount && onMount($('#modal-body')); }
+function closeModal() { $('#modal').close(); }
+
+/* Telefonnummer -> internationales Format für wa.me (Standard: Deutschland) */
+function waNumber(phone) {
+  let n = String(phone || '').replace(/[^\d+]/g, '');
+  if (!n) return '';
+  if (n.startsWith('+')) return n.slice(1);
+  if (n.startsWith('00')) return n.slice(2);
+  if (n.startsWith('0')) return '49' + n.slice(1);
+  return n;
+}
+const waLink = (phone, text) => `https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(text)}`;
+const mailLink = (to, subject, body) => `mailto:${encodeURIComponent(to || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+/* Daten kompakt in einen Link packen (deflate + base64url) */
+function b64u(bytes) { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function unb64u(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+async function pack(obj) {
+  const json = JSON.stringify(obj);
+  if (window.CompressionStream) {
+    const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    return 'z' + b64u(new Uint8Array(await new Response(stream).arrayBuffer()));
+  }
+  return 'j' + b64u(new TextEncoder().encode(json));
+}
+async function unpack(str) {
+  const kind = str[0], bytes = unb64u(str.slice(1));
+  if (kind === 'z') return JSON.parse(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text());
+  if (kind === 'j') return JSON.parse(new TextDecoder().decode(bytes));
+  throw new Error('Unbekanntes Format');
+}
+
+/* =====================================================================
+   Verfügbarkeit: freie Startzeiten für einen Tag berechnen
+   (wird vom Betreiber UND vom Kunden-Bereich benutzt)
+   ===================================================================== */
+function makeAvailability({ work, raster, buffer, blocked, busy, from, to }) {
+  // work: Array[7] (So..Sa) mit [startMin, endMin] oder null
+  // busy: { 'YYYY-MM-DD': [[start, end], ...] }
+  const blockedSet = new Set(blocked);
+  return {
+    starts(day, duration) {
+      if (day < from || day > to || blockedSet.has(day)) return [];
+      const wh = work[parseDs(day).getDay()];
+      if (!wh) return [];
+      const list = busy[day] || [];
+      const minStart = day === todayDs() ? nowMin() + 30 : -1;
+      const res = [];
+      for (let t = wh[0]; t + duration <= wh[1]; t += raster) {
+        if (t < minStart) continue;
+        const clash = list.some(([s, e]) => t < e + buffer && t + duration + buffer > s);
+        if (!clash) res.push(t);
+      }
+      return res;
+    }
+  };
+}
+
+/* Kalender-Komponente: freie Tage grün, auswählbar */
+function mountCalendar(el, { isFree, selected, onSelect, startMonth }) {
+  const start = selected ? parseDs(selected) : (startMonth ? parseDs(startMonth) : new Date());
+  let y = start.getFullYear(), m = start.getMonth();
+  const today = todayDs();
+  function render() {
+    const first = new Date(y, m, 1), offset = (first.getDay() + 6) % 7, daysIn = new Date(y, m + 1, 0).getDate();
+    let h = `<div class="cal"><div class="cal-head"><button type="button" data-nav="-1" aria-label="Vorheriger Monat">‹</button>
+      <b>${MONTHS[m]} ${y}</b><button type="button" data-nav="1" aria-label="Nächster Monat">›</button></div><div class="cal-grid">`;
+    h += ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map(w => `<div class="cal-wd">${w}</div>`).join('');
+    for (let i = 0; i < offset; i++) h += '<div></div>';
+    for (let d = 1; d <= daysIn; d++) {
+      const s = ds(new Date(y, m, d)), free = isFree(s);
+      h += `<button type="button" class="cal-day ${free ? 'free' : 'off'} ${s === selected ? 'sel' : ''} ${s === today ? 'today' : ''}"
+        ${free ? '' : 'disabled'} data-day="${s}">${d}</button>`;
+    }
+    h += `</div><div class="legend"><span><i style="background:var(--free-bg);border:1px solid var(--free-line)"></i>frei</span>
+      <span><i style="background:var(--off-bg)"></i>belegt / geschlossen</span></div></div>`;
+    el.innerHTML = h;
+  }
+  el.onclick = e => {
+    const nav = e.target.closest('[data-nav]');
+    if (nav) { m += Number(nav.dataset.nav); if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } render(); return; }
+    const b = e.target.closest('[data-day]');
+    if (b && !b.disabled) { selected = b.dataset.day; render(); onSelect(selected); }
+  };
+  render();
+  return { refresh(sel) { if (sel !== undefined) selected = sel; render(); } };
+}
+
+function mountTimes(el, starts, duration, selected, onSelect) {
+  if (!starts.length) { el.innerHTML = '<p class="muted">An diesem Tag ist keine passende Uhrzeit frei.</p>'; return; }
+  el.innerHTML = `<div class="times">${starts.map(t =>
+    `<button type="button" class="time ${t === selected ? 'sel' : ''}" data-t="${t}" title="${fmtTime(t)}–${fmtTime(t + duration)}">${fmtTime(t)}</button>`).join('')}</div>`;
+  el.onclick = e => { const b = e.target.closest('[data-t]'); if (!b) return;
+    $$('.time', el).forEach(x => x.classList.toggle('sel', x === b)); onSelect(Number(b.dataset.t)); };
+}
+
+/* =====================================================================
+   Lokaler Speicher (Betreiber)
+   ===================================================================== */
+const KEY = 'stalltermine-v1';
+const DEFAULT_SETTINGS = {
+  name: "Franzi's Hufpflege", phone: '', mail: '',
+  work: [null, [480, 1020], [480, 1020], [480, 1020], [480, 1020], [480, 1020], [480, 720]], // So..Sa
+  raster: 30, minPerHorse: 45, buffer: 30, horizonWeeks: 8, blocked: [], lastBackup: null
+};
+let data = load();
+function load() {
+  try {
+    const d = JSON.parse(localStorage.getItem(KEY));
+    if (d && d.customers) return { customers: d.customers, appts: d.appts || [], settings: { ...DEFAULT_SETTINGS, ...d.settings } };
+  } catch (e) { console.error(e); }
+  return { customers: [], appts: [], settings: structuredClone(DEFAULT_SETTINGS) };
+}
+function save() {
+  localStorage.setItem(KEY, JSON.stringify(data));
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+}
+const customerById = id => data.customers.find(c => c.id === id);
+const custLabel = c => c ? (c.stable ? `${c.stable} – ${c.owner}` : c.owner) : '(gelöschter Kunde)';
+
+function ownerAvailability(excludeApptId) {
+  const s = data.settings, from = todayDs(), to = addDays(from, s.horizonWeeks * 7 - 1);
+  const busy = {};
+  for (const a of data.appts) if (a.id !== excludeApptId) (busy[a.date] ||= []).push([a.start, a.end]);
+  return makeAvailability({ work: s.work, raster: s.raster, buffer: s.buffer, blocked: s.blocked, busy, from, to });
+}
+function overlaps(date, start, end, excludeId) {
+  return data.appts.filter(a => a.id !== excludeId && a.date === date && start < a.end && end > a.start);
+}
+
+/* =====================================================================
+   Nachrichten-Texte
+   ===================================================================== */
+function apptMessage(a) {
+  const c = customerById(a.customerId) || {}, s = data.settings;
+  const horses = a.horses && a.horses.length ? a.horses.join(', ') : `${a.count} Pferd(e)`;
+  return `Hallo ${c.owner || ''},
+
+hiermit bestätige ich Ihren Termin:
+📅 ${fmtDateLong(a.date)}
+🕐 ${fmtTime(a.start)} – ${fmtTime(a.end)} Uhr
+🐴 ${horses}
+📍 ${c.stable ? c.stable + ', ' : ''}${c.stableAddr || ''}
+${a.note ? '\nHinweis: ' + a.note + '\n' : ''}
+Viele Grüße
+${s.name || ''}`.replace(/\n{3,}/g, '\n\n');
+}
+function sendButtons(phone, mail, subject, text) {
+  return `<div class="row">
+    <a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(phone, text))}">WhatsApp${phone ? '' : ' (Kontakt wählen)'}</a>
+    <a class="btn" href="${esc(mailLink(mail, subject, text))}">E-Mail${mail ? '' : ' (ohne Adresse)'}</a>
+    <button type="button" data-copy="${esc(text)}">Text kopieren</button></div>`;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-copy]');
+  if (b) navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Kopiert'), () => toast('Kopieren nicht möglich'));
+});
+
+/* =====================================================================
+   BETREIBER-OBERFLÄCHE
+   ===================================================================== */
+const TABS = [['termine', '📅 Termine'], ['kunden', '🐴 Kunden'], ['buchung', '🔗 QR / Link'], ['einstellungen', '⚙️ Einstellungen']];
+let tab = 'termine';
+function renderTabs() {
+  $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="${k === tab ? 'active' : ''}" data-tab="${k}">${l}</button>`).join('');
+  $('#tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; render(); window.scrollTo(0, 0); } };
+}
+function render() {
+  $('#title').textContent = data.settings.name || "Franzi's Hufpflege";
+  $('#subtitle').textContent = 'Kunden & Terminplanung';
+  renderTabs();
+  $('#app').onchange = null;
+  ({ termine: renderTermine, kunden: renderKunden, buchung: renderBuchung, einstellungen: renderEinstellungen })[tab]();
+}
+
+function backupBanner() {
+  const s = data.settings;
+  if (!data.customers.length && !data.appts.length) return '';
+  const days = s.lastBackup ? dayDiff(s.lastBackup.slice(0, 10), todayDs()) : null;
+  if (days !== null && days < 14) return '';
+  return `<div class="banner">⚠️ Ihre Daten liegen nur auf diesem Gerät. ${days === null ? 'Es gibt noch keine Sicherung.' : `Letzte Sicherung vor ${days} Tagen.`}
+    <button class="small" style="margin-left:6px" onclick="exportBackup()">Jetzt sichern</button></div>`;
+}
+
+/* ---------- Termine ---------- */
+let showPast = false;
+function renderTermine() {
+  const today = todayDs();
+  const sorted = [...data.appts].sort((a, b) => (a.date + pad(a.start).padStart(4, '0')).localeCompare(b.date + pad(b.start).padStart(4, '0')));
+  const upcoming = sorted.filter(a => a.date >= today), past = sorted.filter(a => a.date < today).reverse();
+  const group = list => {
+    let h = '', last = '';
+    for (const a of list) {
+      if (a.date !== last) { h += `<div class="daylabel">${fmtDateLong(a.date)}</div>`; last = a.date; }
+      const c = customerById(a.customerId);
+      h += `<div class="card appt"><div class="t">${fmtTime(a.start)}<div class="muted small">${fmtTime(a.end)}</div></div>
+        <div class="grow"><b>${esc(custLabel(c))}</b>
+          <div class="muted small">${esc(a.horses && a.horses.length ? a.horses.join(', ') : a.count + ' Pferd(e)')}
+          ${c && c.stableAddr ? ' · ' + esc(c.stableAddr) : ''}</div>
+          ${a.note ? `<div class="small">${esc(a.note)}</div>` : ''}
+          ${a.source === 'kunde' ? '<span class="pill green">vom Kunden gebucht</span>' : ''}
+          <div class="row" style="margin-top:8px">
+            <button class="small" onclick="openSend('${a.id}')">📤 Senden</button>
+            ${c && c.stableAddr ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(mapsUrl(c.stableAddr))}">🗺 Route</a>` : ''}
+            <button class="small" onclick="openApptEditor(null,'${a.id}')">✏️ Verschieben</button>
+            <button class="small danger" onclick="deleteAppt('${a.id}')">🗑</button>
+          </div></div></div>`;
+    }
+    return h;
+  };
+  $('#app').innerHTML = `${backupBanner()}
+    <div class="card"><b>Buchungsanfrage übernehmen</b>
+      <p class="muted small" style="margin:4px 0 8px">Kunden schicken Ihnen nach der Buchung einen Link. Tippen Sie ihn an – oder fügen Sie ihn hier ein.</p>
+      <div class="row"><input class="grow" id="reqInput" placeholder="Link aus WhatsApp/E-Mail einfügen">
+      <button onclick="importFromInput()">Übernehmen</button></div></div>
+    <h3>Kommende Termine (${upcoming.length})</h3>
+    ${upcoming.length ? group(upcoming) : '<p class="muted">Noch keine Termine. Tippen Sie auf „+ Neuer Termin“.</p>'}
+    ${past.length ? `<button style="margin-top:14px" onclick="showPast=!showPast;render()">${showPast ? 'Vergangene ausblenden' : `Vergangene Termine anzeigen (${past.length})`}</button>
+      ${showPast ? group(past) : ''}` : ''}
+    <button class="primary fab" onclick="openApptEditor()">+ Neuer Termin</button>`;
+}
+function deleteAppt(id) {
+  const a = data.appts.find(x => x.id === id); if (!a) return;
+  if (!confirm(`Termin am ${fmtDate(a.date)} um ${fmtTime(a.start)} löschen?`)) return;
+  data.appts = data.appts.filter(x => x.id !== id); save(); render();
+  const c = customerById(a.customerId);
+  if (a.date >= todayDs() && c && confirm('Kunden über die Absage informieren?')) {
+    const text = `Hallo ${c.owner},\n\nleider muss ich den Termin am ${fmtDateLong(a.date)} um ${fmtTime(a.start)} Uhr absagen. Ich melde mich mit einem neuen Terminvorschlag.\n\nViele Grüße\n${data.settings.name}`;
+    openModal('Absage senden', sendButtons(c.phone, c.mail, 'Terminabsage', text));
+  }
+}
+function openSend(id) {
+  const a = data.appts.find(x => x.id === id), c = customerById(a.customerId) || {};
+  openModal('Termin senden', `<p class="muted small">An: ${esc(c.owner || '')} ${c.phone ? '· ' + esc(c.phone) : ''} ${c.mail ? '· ' + esc(c.mail) : ''}</p>
+    <textarea id="sendText" style="width:100%;min-height:220px">${esc(apptMessage(a))}</textarea><div id="sendBtns" style="margin-top:10px"></div>`, body => {
+    const upd = () => { $('#sendBtns', body).innerHTML = sendButtons(c.phone, c.mail, `Termin am ${fmtDate(a.date)}`, $('#sendText', body).value); };
+    $('#sendText', body).oninput = upd; upd();
+  });
+}
+
+/* Termin anlegen / verschieben */
+function openApptEditor(presetCustomerId, editId) {
+  const editing = editId ? data.appts.find(a => a.id === editId) : null;
+  const st = {
+    customerId: editing ? editing.customerId : (presetCustomerId || ''),
+    horses: editing ? [...(editing.horses || [])] : null,
+    count: editing ? editing.count : 1,
+    duration: editing ? editing.end - editing.start : data.settings.minPerHorse,
+    date: editing ? editing.date : null, start: editing ? editing.start : null,
+    note: editing ? editing.note || '' : ''
+  };
+  const avail = ownerAvailability(editId);
+  const custOptions = () => '<option value="">– Kunde wählen –</option>' + [...data.customers].sort((a, b) => custLabel(a).localeCompare(custLabel(b)))
+    .map(c => `<option value="${c.id}" ${c.id === st.customerId ? 'selected' : ''}>${esc(custLabel(c))}</option>`).join('');
+
+  openModal(editing ? 'Termin verschieben' : 'Neuer Termin', `
+    <label class="f">Kunde <div class="row" style="margin-top:4px"><select id="eCust" class="grow">${custOptions()}</select>
+      <button type="button" id="eNewCust">+ Neu</button></div></label>
+    <div id="eHorses"></div>
+    <label class="f">Dauer (Minuten) <input id="eDur" type="number" min="5" step="5" value="${st.duration}"></label>
+    <div class="muted small" style="margin-bottom:6px">Tag wählen (grün = frei):</div>
+    <div id="eCal" class="card"></div>
+    <div id="eTimesWrap" class="card" style="display:none"><div class="muted small" style="margin-bottom:6px" id="eDayLabel"></div>
+      <div id="eTimes"></div>
+      <label class="f" style="margin-top:10px">…oder eigene Uhrzeit <input id="eManual" type="time" step="300"></label></div>
+    <label class="f">Notiz <textarea id="eNote" placeholder="z. B. Eisen vorne neu">${esc(st.note)}</textarea></label>
+    <button class="primary big" id="eSave" disabled>Termin speichern</button>`, body => {
+    const cal = mountCalendar($('#eCal', body), { isFree: d => avail.starts(d, st.duration).length > 0, selected: st.date, onSelect: d => { st.date = d; st.start = null; showTimes(); check(); } });
+    function renderHorses() {
+      const c = customerById(st.customerId), el = $('#eHorses', body);
+      if (c && c.horses.length) {
+        if (!st.horses) st.horses = c.horses.map(h => h.name);
+        el.innerHTML = `<div class="muted small">Pferde</div>` + c.horses.map(h =>
+          `<label class="chk"><input type="checkbox" value="${esc(h.name)}" ${st.horses.includes(h.name) ? 'checked' : ''}> ${esc(h.name)}</label>`).join('');
+        el.onchange = () => { st.horses = $$('input:checked', el).map(i => i.value); st.count = st.horses.length; autoDuration(); };
+        st.count = st.horses.length;
+      } else {
+        st.horses = [];
+        el.innerHTML = `<label class="f">Anzahl Pferde <input type="number" min="1" value="${st.count}" id="eCount"></label>`;
+        $('#eCount', el).oninput = e => { st.count = Math.max(1, Number(e.target.value) || 1); autoDuration(); };
+      }
+    }
+    function autoDuration() { st.duration = Math.max(1, st.count) * data.settings.minPerHorse; $('#eDur', body).value = st.duration; durationChanged(); }
+    function durationChanged() { if (st.start !== null && !avail.starts(st.date, st.duration).includes(st.start) && !$('#eManual', body).value) st.start = null; cal.refresh(); showTimes(); check(); }
+    function showTimes() {
+      const wrap = $('#eTimesWrap', body);
+      if (!st.date) { wrap.style.display = 'none'; return; }
+      wrap.style.display = '';
+      $('#eDayLabel', body).textContent = `Freie Uhrzeiten am ${fmtDateLong(st.date)}:`;
+      mountTimes($('#eTimes', body), avail.starts(st.date, st.duration), st.duration, st.start, t => { st.start = t; $('#eManual', body).value = ''; check(); });
+    }
+    function check() { $('#eSave', body).disabled = !(st.customerId && st.date && st.start !== null && st.duration > 0); }
+    $('#eCust', body).onchange = e => { st.customerId = e.target.value; st.horses = null; renderHorses(); autoDuration(); check(); };
+    $('#eNewCust', body).onclick = () => openCustomerEditor(null, c => openApptEditor(c.id));
+    $('#eDur', body).oninput = e => { st.duration = Math.max(5, Number(e.target.value) || 5); durationChanged(); };
+    $('#eManual', body).oninput = e => { const t = parseTime(e.target.value); st.start = t; $$('.time', body).forEach(x => x.classList.remove('sel')); check(); };
+    $('#eSave', body).onclick = () => {
+      st.note = $('#eNote', body).value.trim();
+      const end = st.start + st.duration;
+      const clash = overlaps(st.date, st.start, end, editId);
+      if (clash.length && !confirm(`Achtung: überschneidet sich mit ${clash.map(a => fmtTime(a.start) + ' ' + custLabel(customerById(a.customerId))).join(', ')}. Trotzdem speichern?`)) return;
+      let appt;
+      if (editing) { appt = editing; Object.assign(appt, { customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note }); }
+      else { appt = { id: uid(), customerId: st.customerId, date: st.date, start: st.start, end, horses: st.horses, count: st.count, note: st.note, created: new Date().toISOString(), source: 'betrieb' }; data.appts.push(appt); }
+      save(); tab = 'termine'; render(); openSend(appt.id); toast('Termin gespeichert');
+    };
+    renderHorses(); showTimes(); check();
+  });
+}
+
+/* ---------- Kunden ---------- */
+let custSearch = '';
+function renderKunden() {
+  const q = custSearch.toLowerCase();
+  const list = [...data.customers].filter(c => !q || JSON.stringify(c).toLowerCase().includes(q)).sort((a, b) => custLabel(a).localeCompare(custLabel(b)));
+  $('#app').innerHTML = `${backupBanner()}
+    <input id="cSearch" style="width:100%;margin-bottom:12px" placeholder="🔍 Suchen (Name, Stall, Pferd, Ort …)" value="${esc(custSearch)}">
+    <div id="cList">${list.length ? list.map(c => {
+      const next = data.appts.filter(a => a.customerId === c.id && a.date >= todayDs()).sort((a, b) => a.date.localeCompare(b.date))[0];
+      return `<div class="card">
+        <div class="row"><div class="grow"><b>${esc(c.stable || c.owner)}</b>${c.stable ? `<div class="muted small">Besitzer: ${esc(c.owner)}</div>` : ''}</div>
+          <span class="pill">${c.horses.length} Pferd${c.horses.length === 1 ? '' : 'e'}</span></div>
+        ${c.horses.length ? `<div class="small" style="margin-top:4px">🐴 ${esc(c.horses.map(h => h.name).join(', '))}</div>` : ''}
+        ${c.stableAddr ? `<div class="small muted">📍 Stall: ${esc(c.stableAddr)}</div>` : ''}
+        ${c.ownerAddr ? `<div class="small muted">🏠 Besitzer: ${esc(c.ownerAddr)}</div>` : ''}
+        ${c.phone || c.mail ? `<div class="small muted">${c.phone ? '📞 ' + esc(c.phone) : ''} ${c.mail ? '✉️ ' + esc(c.mail) : ''}</div>` : ''}
+        ${c.route ? `<div class="small" style="margin-top:4px">🚗 ${esc(c.route)}</div>` : ''}
+        ${next ? `<div style="margin-top:4px"><span class="pill green">Nächster Termin: ${fmtDate(next.date)} ${fmtTime(next.start)}</span></div>` : ''}
+        <div class="row" style="margin-top:10px">
+          <button class="small primary" onclick="openApptEditor('${c.id}')">+ Termin</button>
+          <button class="small" onclick="sendBookingLink('${c.id}')">🔗 Buchungslink</button>
+          ${c.stableAddr ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(mapsUrl(c.stableAddr))}">🗺 Route</a>` : ''}
+          <button class="small" onclick="openCustomerEditor('${c.id}')">✏️ Bearbeiten</button>
+        </div></div>`;
+    }).join('') : '<p class="muted">Keine Kunden gefunden.</p>'}</div>
+    <button class="primary fab" onclick="openCustomerEditor()">+ Neuer Kunde</button>`;
+  const inp = $('#cSearch');
+  inp.oninput = e => { custSearch = e.target.value; const pos = inp.selectionStart; renderKunden(); const n = $('#cSearch'); n.focus(); n.setSelectionRange(pos, pos); };
+}
+
+function openCustomerEditor(id, afterSave) {
+  const c = id ? customerById(id) : { owner: '', ownerAddr: '', stable: '', stableAddr: '', phone: '', mail: '', route: '', note: '', horses: [] };
+  const horses = c.horses.map(h => ({ ...h }));
+  openModal(id ? 'Kunde bearbeiten' : 'Neuer Kunde', `
+    <div class="grid2">
+      <label class="f">Name des Besitzers * <input id="kOwner" value="${esc(c.owner)}" autocomplete="off"></label>
+      <label class="f">Name des Stalls <input id="kStable" value="${esc(c.stable)}"></label>
+      <label class="f">Telefon (WhatsApp) <input id="kPhone" type="tel" value="${esc(c.phone)}" placeholder="0171 1234567"></label>
+      <label class="f">E-Mail-Adresse <input id="kMail" type="email" value="${esc(c.mail)}"></label>
+    </div>
+    <label class="f">Anschrift des Besitzers <textarea id="kOwnerAddr" rows="2">${esc(c.ownerAddr)}</textarea></label>
+    <label class="f">Anschrift des Stalls <textarea id="kStableAddr" rows="2">${esc(c.stableAddr)}</textarea></label>
+    <label class="f">Anfahrtsweg <textarea id="kRoute" placeholder="z. B. 2. Einfahrt links nach dem Hof, Schranke Code 1234">${esc(c.route)}</textarea></label>
+    <div class="muted small">Pferde – Anzahl: <b id="kCount">${horses.length}</b></div>
+    <div id="kHorses" style="margin:6px 0"></div>
+    <button type="button" id="kAddHorse">+ Pferd hinzufügen</button>
+    <label class="f" style="margin-top:12px">Notizen <textarea id="kNote">${esc(c.note)}</textarea></label>
+    <div class="row" style="margin-top:6px">
+      <button class="primary grow big" id="kSave">Speichern</button>
+      ${id ? '<button class="danger" id="kDel">Löschen</button>' : ''}</div>`, body => {
+    const drawHorses = () => {
+      $('#kHorses', body).innerHTML = horses.map((h, i) => `<div class="horse-row">
+        <input class="grow" data-i="${i}" data-k="name" placeholder="Name des Pferdes" value="${esc(h.name)}">
+        <input style="width:40%" data-i="${i}" data-k="info" placeholder="Info (optional)" value="${esc(h.info || '')}">
+        <button type="button" data-rm="${i}" aria-label="Entfernen">✕</button></div>`).join('');
+      $('#kCount', body).textContent = horses.length;
+    };
+    $('#kHorses', body).oninput = e => { const i = e.target.dataset.i; if (i !== undefined) horses[i][e.target.dataset.k] = e.target.value; };
+    $('#kHorses', body).onclick = e => { const r = e.target.closest('[data-rm]'); if (r) { horses.splice(Number(r.dataset.rm), 1); drawHorses(); } };
+    $('#kAddHorse', body).onclick = () => { horses.push({ name: '', info: '' }); drawHorses(); $$('#kHorses input[data-k=name]', body).pop().focus(); };
+    drawHorses();
+    $('#kSave', body).onclick = () => {
+      const v = k => $(k, body).value.trim();
+      if (!v('#kOwner')) { toast('Bitte den Namen des Besitzers eintragen'); $('#kOwner', body).focus(); return; }
+      const rec = id ? c : { id: uid(), created: new Date().toISOString() };
+      Object.assign(rec, { owner: v('#kOwner'), stable: v('#kStable'), phone: v('#kPhone'), mail: v('#kMail'), ownerAddr: v('#kOwnerAddr'),
+        stableAddr: v('#kStableAddr'), route: v('#kRoute'), note: v('#kNote'),
+        horses: horses.map(h => ({ name: h.name.trim(), info: (h.info || '').trim() })).filter(h => h.name) });
+      if (!id) data.customers.push(rec);
+      save(); closeModal(); render(); toast('Kunde gespeichert');
+      if (afterSave) afterSave(rec);
+    };
+    if (id) $('#kDel', body).onclick = () => {
+      const n = data.appts.filter(a => a.customerId === id).length;
+      if (!confirm(`Kunde „${c.owner}“ ${n ? `und ${n} Termin(e) ` : ''}endgültig löschen?`)) return;
+      data.customers = data.customers.filter(x => x.id !== id); data.appts = data.appts.filter(a => a.customerId !== id);
+      save(); closeModal(); render();
+    };
+  });
+}
+
+/* ---------- Buchungslink / QR ---------- */
+async function buildBookingLink(customer) {
+  const s = data.settings, from = todayDs(), days = s.horizonWeeks * 7, to = addDays(from, days - 1);
+  const r5 = m => Math.round(m / 5);
+  const p = {
+    v: 1, n: s.name, p: s.phone, m: s.mail,
+    w: s.work.map(x => x ? [r5(x[0]), r5(x[1])] : 0), r: s.raster, h: s.minPerHorse, b: s.buffer,
+    f: from.replace(/-/g, ''), d: days,
+    x: s.blocked.filter(d => d >= from && d <= to).map(d => dayDiff(from, d)),
+    o: data.appts.filter(a => a.date >= from && a.date <= to).map(a => [dayDiff(from, a.date), Math.floor(a.start / 5), Math.ceil(a.end / 5)])
+  };
+  if (customer) p.c = { i: customer.id, o: customer.owner, s: customer.stable, a: customer.stableAddr, t: customer.phone, e: customer.mail, h: customer.horses.map(h => h.name) };
+  return baseUrl() + '#b=' + await pack(p);
+}
+async function sendBookingLink(id) {
+  const c = customerById(id);
+  if (!data.settings.phone && !data.settings.mail) { toast('Bitte zuerst in den Einstellungen Ihre Telefonnummer/E-Mail eintragen'); tab = 'einstellungen'; render(); return; }
+  const link = await buildBookingLink(c);
+  const text = `Hallo ${c.owner},\n\nüber diesen Link können Sie sich direkt einen freien Termin aussuchen:\n${link}\n\nViele Grüße\n${data.settings.name}`;
+  openModal('Persönlichen Buchungslink senden', `<p class="muted small">Der Link enthält die freien Zeiten von heute und die Daten von ${esc(c.owner)} (vorausgefüllt).
+    Gültig ${data.settings.horizonWeeks} Wochen.</p>${sendButtons(c.phone, c.mail, 'Termin buchen', text)}`);
+}
+function qrSvg(text) {
+  const qr = qrcode(0, 'L'); qr.addData(text, 'Byte'); qr.make();
+  return { svg: qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }), img: qr.createDataURL(8, 4), modules: qr.getModuleCount() };
+}
+function renderBuchung() {
+  const s = data.settings;
+  $('#app').innerHTML = `
+    <div class="card"><h2>Kunden-Bereich per QR-Code</h2>
+      <p class="muted small">Kunden scannen den Code, sehen freie Tage (grün), wählen eine Uhrzeit und buchen.
+      Die Buchung kommt per WhatsApp oder E-Mail bei Ihnen an – ein Tipp auf den Link darin trägt den Termin hier ein.</p>
+      <div class="banner">ℹ️ Der Code enthält die freien Zeiten von <b>heute</b> für ${s.horizonWeeks} Wochen. Nach neuen Terminen bitte neu erzeugen,
+      sonst sehen Kunden veraltete Lücken. Ein dauerhaft aufgehängter QR-Code braucht einen Online-Server (siehe Hinweis in der Anleitung).</div>
+      ${!s.phone && !s.mail ? '<div class="banner">Bitte zuerst in den <b>Einstellungen</b> Ihre Telefonnummer und/oder E-Mail eintragen – dorthin werden Buchungen geschickt.</div>' : ''}
+      <button class="primary big" id="qrMake" ${!s.phone && !s.mail ? 'disabled' : ''}>QR-Code & Link erzeugen</button>
+      <div id="qrOut" style="margin-top:14px"></div></div>`;
+  $('#qrMake').onclick = async () => {
+    const link = await buildBookingLink(null);
+    let q;
+    try { q = qrSvg(link); } catch (e) { $('#qrOut').innerHTML = `<div class="banner">Zu viele Daten für einen QR-Code (${link.length} Zeichen). Bitte in den Einstellungen den Buchungszeitraum verkürzen. Den Link können Sie trotzdem verschicken.</div>`; }
+    $('#qrOut').innerHTML = (q ? `<div style="text-align:center"><div class="qr">${q.svg}</div>
+        <p class="muted small">Termin buchen bei ${esc(s.name)} – gültig bis ${fmtDate(addDays(todayDs(), s.horizonWeeks * 7 - 1))}</p>
+        ${link.length > 1200 ? '<p class="small" style="color:#b45309">Der Code ist sehr fein – zum Scannen ggf. vergrößern oder den Zeitraum verkürzen.</p>' : ''}</div>` : $('#qrOut').innerHTML) + `
+      <label class="f">Link <input id="qrLink" readonly value="${esc(link)}"></label>
+      <div class="row noprint">
+        <button data-copy="${esc(link)}">Link kopieren</button>
+        ${navigator.share ? '<button id="qrShare">Teilen …</button>' : ''}
+        ${q ? `<a class="btn" download="buchungs-qr.gif" href="${q.img}">QR herunterladen</a><button onclick="window.print()">Drucken</button>` : ''}
+        <a class="btn" target="_blank" rel="noopener" href="${esc(link)}">Kundenansicht testen</a></div>`;
+    const sh = $('#qrShare'); if (sh) sh.onclick = () => navigator.share({ title: 'Termin buchen', text: `Termin buchen bei ${s.name}`, url: link }).catch(() => {});
+  };
+}
+
+/* ---------- Einstellungen ---------- */
+function renderEinstellungen() {
+  const s = data.settings;
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  $('#app').innerHTML = `
+    <div class="card"><h2>Ihre Daten</h2><p class="muted small">Erscheinen im Kunden-Bereich; Buchungen werden an diese Nummer/Adresse geschickt.</p>
+      <label class="f">Name / Betrieb <input id="sName" value="${esc(s.name)}" placeholder="z. B. Hufpflege Müller"></label>
+      <div class="grid2"><label class="f">Telefon (WhatsApp) <input id="sPhone" type="tel" value="${esc(s.phone)}"></label>
+      <label class="f">E-Mail <input id="sMail" type="email" value="${esc(s.mail)}"></label></div></div>
+    <div class="card"><h2>Arbeitszeiten</h2>
+      ${order.map(d => `<div class="row" style="margin-bottom:6px"><label class="chk" style="width:130px"><input type="checkbox" data-wd="${d}" ${s.work[d] ? 'checked' : ''}> ${WD_LONG[d]}</label>
+        <input type="time" step="300" data-from="${d}" value="${s.work[d] ? fmtTime(s.work[d][0]) : '08:00'}"> – <input type="time" step="300" data-to="${d}" value="${s.work[d] ? fmtTime(s.work[d][1]) : '17:00'}"></div>`).join('')}
+      <div class="grid2" style="margin-top:10px">
+        <label class="f">Minuten pro Pferd <input id="sMph" type="number" min="5" step="5" value="${s.minPerHorse}"></label>
+        <label class="f">Puffer zwischen Terminen (Anfahrt, Min.) <input id="sBuf" type="number" min="0" step="5" value="${s.buffer}"></label>
+        <label class="f">Startzeiten-Raster (Min.) <select id="sRaster">${[15, 30, 60].map(v => `<option ${v === s.raster ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label class="f">Buchbar für die nächsten … Wochen <input id="sWeeks" type="number" min="1" max="26" value="${s.horizonWeeks}"></label>
+      </div></div>
+    <div class="card"><h2>Freie Tage / Urlaub</h2>
+      <div class="row"><input type="date" id="bFrom"> bis <input type="date" id="bTo"><button id="bAdd">Sperren</button></div>
+      <div id="bList" style="margin-top:8px">${s.blocked.filter(d => d >= todayDs()).sort().map(d => `<span class="pill" style="margin:2px">${fmtDate(d)} <a href="#" data-unblock="${d}">✕</a></span>`).join('') || '<span class="muted small">Keine gesperrten Tage.</span>'}</div></div>
+    <div class="card"><h2>Datensicherung</h2>
+      <p class="muted small">Alle Daten liegen ausschließlich in diesem Browser auf diesem Gerät. Wird der Browser-Speicher gelöscht, sind sie weg.
+      Sichern Sie regelmäßig (z. B. in iCloud/OneDrive/Google Drive). ${s.lastBackup ? 'Letzte Sicherung: ' + fmtDate(s.lastBackup.slice(0, 10)) : ''}</p>
+      <div class="row"><button onclick="exportBackup()">💾 Sicherung herunterladen</button>
+      <label class="btn">📂 Sicherung laden<input type="file" accept=".json,application/json" id="bImport" hidden></label></div>
+      <p class="muted small" style="margin-top:10px">${data.customers.length} Kunden · ${data.appts.length} Termine gespeichert</p></div>`;
+
+  const saveSettings = () => {
+    s.name = $('#sName').value.trim(); s.phone = $('#sPhone').value.trim(); s.mail = $('#sMail').value.trim();
+    for (const d of order) {
+      const on = $(`[data-wd="${d}"]`).checked, f = parseTime($(`[data-from="${d}"]`).value), t = parseTime($(`[data-to="${d}"]`).value);
+      s.work[d] = on && f !== null && t !== null && t > f ? [f, t] : null;
+    }
+    s.minPerHorse = Math.max(5, Number($('#sMph').value) || 45); s.buffer = Math.max(0, Number($('#sBuf').value) || 0);
+    s.raster = Number($('#sRaster').value); s.horizonWeeks = Math.min(26, Math.max(1, Number($('#sWeeks').value) || 8));
+    save(); $('#title').textContent = s.name || "Franzi's Hufpflege";
+  };
+  $('#app').onchange = e => { if (e.target.id !== 'bImport' && e.target.id !== 'bFrom' && e.target.id !== 'bTo') { saveSettings(); toast('Gespeichert'); } };
+  $('#bAdd').onclick = () => {
+    const f = $('#bFrom').value, t = $('#bTo').value || f; if (!f) return toast('Bitte Datum wählen');
+    for (let d = f; d <= t; d = addDays(d, 1)) if (!s.blocked.includes(d)) s.blocked.push(d);
+    s.blocked = s.blocked.filter(d => d >= addDays(todayDs(), -60));
+    save(); renderEinstellungen(); toast('Tage gesperrt');
+  };
+  $('#bList').onclick = e => { const a = e.target.closest('[data-unblock]'); if (a) { e.preventDefault(); s.blocked = s.blocked.filter(d => d !== a.dataset.unblock); save(); renderEinstellungen(); } };
+  $('#bImport').onchange = e => {
+    const file = e.target.files[0]; if (!file) return;
+    file.text().then(t => {
+      const d = JSON.parse(t);
+      if (!d.customers || !d.appts) throw new Error('Keine gültige Sicherung');
+      if (!confirm(`Sicherung mit ${d.customers.length} Kunden und ${d.appts.length} Terminen laden? Die aktuellen Daten werden ersetzt.`)) return;
+      data = { customers: d.customers, appts: d.appts, settings: { ...DEFAULT_SETTINGS, ...d.settings } }; save(); render(); toast('Sicherung geladen');
+    }).catch(err => alert('Fehler beim Laden: ' + err.message));
+  };
+}
+function exportBackup() {
+  data.settings.lastBackup = new Date().toISOString(); save();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `stalltermine-sicherung-${todayDs()}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  render();
+}
+
+/* ---------- Buchungsanfrage eines Kunden übernehmen ---------- */
+function importFromInput() {
+  const v = $('#reqInput').value.trim(), i = v.indexOf('#r=');
+  if (i < 0) return toast('Kein gültiger Buchungslink');
+  handleRequest(v.slice(i + 3));
+}
+async function handleRequest(packed) {
+  let r;
+  try { r = await unpack(packed); if (!r || !/^\d{4}-\d\d-\d\d$/.test(r.d) || typeof r.s !== 'number' || typeof r.e !== 'number' || !r.c) throw 0; }
+  catch (e) { toast('Buchungslink ist beschädigt'); return; }
+  if (data.appts.some(a => a.reqId === r.q)) { toast('Diese Buchung wurde bereits übernommen'); tab = 'termine'; render(); return; }
+  const rc = r.c, norm = p => waNumber(p);
+  let cust = (rc.i && customerById(rc.i)) || data.customers.find(c => (rc.t && c.phone && norm(c.phone) === norm(rc.t)) ||
+    (rc.e && c.mail && c.mail.toLowerCase() === String(rc.e).toLowerCase()) ||
+    (c.owner.toLowerCase() === String(rc.o || '').toLowerCase() && (c.stable || '').toLowerCase() === String(rc.s || '').toLowerCase()));
+  const clash = overlaps(r.d, r.s, r.e);
+  const horses = Array.isArray(rc.h) ? rc.h.map(String).filter(Boolean) : [];
+  openModal('Neue Buchung', `
+    <div class="card"><b>${fmtDateLong(r.d)}</b><br>${fmtTime(r.s)} – ${fmtTime(r.e)} Uhr</div>
+    <div class="card small">
+      <b>${esc(rc.o)}</b>${rc.s ? ' · ' + esc(rc.s) : ''}<br>
+      ${rc.a ? '📍 ' + esc(rc.a) + '<br>' : ''}${rc.t ? '📞 ' + esc(rc.t) + ' ' : ''}${rc.e ? '✉️ ' + esc(rc.e) : ''}<br>
+      🐴 ${esc(horses.length ? horses.join(', ') : (rc.n || 1) + ' Pferd(e)')}
+      ${r.k ? `<br>💬 ${esc(r.k)}` : ''}</div>
+    <p class="small">${cust ? `✅ Zugeordnet zu Kunde <b>${esc(custLabel(cust))}</b>` : '🆕 Neuer Kunde – wird automatisch angelegt.'}</p>
+    ${clash.length ? `<div class="banner">⚠️ Überschneidung mit: ${clash.map(a => esc(fmtTime(a.start) + ' ' + custLabel(customerById(a.customerId)))).join(', ')}</div>` : ''}
+    <div class="row"><button class="primary grow big" id="rOk">${clash.length ? 'Trotzdem bestätigen' : 'Termin bestätigen'}</button></div>
+    <div class="row" style="margin-top:8px"><button class="grow" id="rNo">Ablehnen & neuen Link senden</button></div>`, body => {
+    const ensureCustomer = () => {
+      if (cust) {
+        if (!cust.phone && rc.t) cust.phone = String(rc.t); if (!cust.mail && rc.e) cust.mail = String(rc.e);
+        if (!cust.stableAddr && rc.a) cust.stableAddr = String(rc.a);
+        for (const h of horses) if (!cust.horses.some(x => x.name.toLowerCase() === h.toLowerCase())) cust.horses.push({ name: h, info: '' });
+        return cust;
+      }
+      cust = { id: uid(), created: new Date().toISOString(), owner: String(rc.o || 'Unbekannt'), stable: String(rc.s || ''), stableAddr: String(rc.a || ''),
+        ownerAddr: '', phone: String(rc.t || ''), mail: String(rc.e || ''), route: '', note: '', horses: horses.map(name => ({ name, info: '' })) };
+      data.customers.push(cust); return cust;
+    };
+    $('#rOk', body).onclick = () => {
+      const c = ensureCustomer();
+      const a = { id: uid(), reqId: r.q, customerId: c.id, date: r.d, start: r.s, end: r.e, horses, count: horses.length || Number(rc.n) || 1,
+        note: r.k ? String(r.k) : '', created: new Date().toISOString(), source: 'kunde' };
+      data.appts.push(a); save(); tab = 'termine'; render(); openSend(a.id); toast('Termin eingetragen');
+    };
+    $('#rNo', body).onclick = async () => {
+      const c = ensureCustomer(); save();
+      const link = await buildBookingLink(c);
+      const text = `Hallo ${c.owner},\n\nder Termin am ${fmtDateLong(r.d)} um ${fmtTime(r.s)} Uhr ist leider schon vergeben. Hier sind die aktuell freien Zeiten:\n${link}\n\nViele Grüße\n${data.settings.name}`;
+      openModal('Absage senden', sendButtons(c.phone, c.mail, 'Ihre Terminanfrage', text)); render();
+    };
+  });
+}
+
+/* =====================================================================
+   KUNDEN-BEREICH (über QR-Code / Link, läuft auf dem Handy des Kunden)
+   ===================================================================== */
+async function renderCustomer(packed) {
+  $('#tabs').style.display = 'none';
+  $('#subtitle').textContent = 'Termin online buchen';
+  let p;
+  try { p = await unpack(packed); } catch (e) { $('#app').innerHTML = '<div class="card">Dieser Buchungslink ist leider beschädigt. Bitte fordern Sie einen neuen an.</div>'; return; }
+  $('#title').textContent = p.n ? `Termin bei ${p.n}` : 'Termin buchen';
+  document.title = $('#title').textContent;
+  const from = `${p.f.slice(0, 4)}-${p.f.slice(4, 6)}-${p.f.slice(6, 8)}`, to = addDays(from, p.d - 1);
+  if (to < todayDs()) { $('#app').innerHTML = `<div class="card"><h2>Link abgelaufen</h2><p>Bitte fordern Sie bei ${esc(p.n)} einen aktuellen Buchungslink an.</p></div>`; return; }
+  const busy = {};
+  for (const [off, s, e] of p.o || []) (busy[addDays(from, off)] ||= []).push([s * 5, e * 5]);
+  const avail = makeAvailability({ work: p.w.map(x => x ? [x[0] * 5, x[1] * 5] : null), raster: p.r, buffer: p.b,
+    blocked: (p.x || []).map(o => addDays(from, o)), busy, from: from > todayDs() ? from : todayDs(), to });
+  const pre = p.c || null;
+  const guestKey = 'stalltermine-gast';
+  const guest = pre ? {} : (JSON.parse(localStorage.getItem(guestKey) || '{}'));
+  const st = { date: null, start: null, horses: pre ? [...(pre.h || [])] : [], count: pre && pre.h && pre.h.length ? pre.h.length : (guest.count || 1) };
+  const duration = () => Math.max(1, st.count) * p.h;
+
+  $('#app').innerHTML = `<div class="hero"><img src="apple-touch-icon.png" alt="Logo"><div style="margin-top:8px">Wählen Sie Ihren Wunschtermin – grün markierte Tage und Uhrzeiten sind frei.</div></div>
+  <div class="steps">
+    <div class="step"><div class="card"><b>Ihre Angaben</b>
+      ${pre ? `<p class="small" style="margin:6px 0">${esc(pre.o)}${pre.s ? ' · ' + esc(pre.s) : ''}${pre.a ? '<br><span class="muted">' + esc(pre.a) + '</span>' : ''}</p>
+        ${pre.h && pre.h.length ? '<div class="muted small">Welche Pferde?</div>' + pre.h.map(h => `<label class="chk"><input type="checkbox" checked value="${esc(h)}"> ${esc(h)}</label>`).join('') : `<label class="f">Anzahl Pferde <input id="gCount" type="number" min="1" value="${st.count}"></label>`}`
+      : `<div class="grid2" style="margin-top:8px">
+        <label class="f">Ihr Name * <input id="gOwner" autocomplete="name" value="${esc(guest.o || '')}"></label>
+        <label class="f">Telefon (WhatsApp) * <input id="gPhone" type="tel" autocomplete="tel" value="${esc(guest.t || '')}"></label>
+        <label class="f">Name des Stalls <input id="gStable" value="${esc(guest.s || '')}"></label>
+        <label class="f">E-Mail <input id="gMail" type="email" autocomplete="email" value="${esc(guest.e || '')}"></label></div>
+        <label class="f">Anschrift des Stalls * <input id="gAddr" autocomplete="street-address" value="${esc(guest.a || '')}"></label>
+        <div class="grid2"><label class="f">Anzahl Pferde * <input id="gCount" type="number" min="1" value="${st.count}"></label>
+        <label class="f">Namen der Pferde <input id="gHorses" placeholder="z. B. Luna, Max" value="${esc(guest.hn || '')}"></label></div>`}
+      <div class="muted small">Geplante Dauer: <b id="gDur">${duration()}</b> Minuten</div></div></div>
+    <div class="step"><div class="card"><b>Tag wählen</b> <span class="muted small">(grün = frei)</span><div id="gCal" style="margin-top:8px"></div></div></div>
+    <div class="step"><div class="card"><b>Uhrzeit wählen</b><div id="gTimes" style="margin-top:8px"><p class="muted small">Bitte zuerst einen grünen Tag wählen.</p></div></div></div>
+    <div class="step"><div class="card"><b>Verbindlich buchen</b>
+      <label class="f" style="margin-top:8px">Nachricht (optional) <textarea id="gNote" placeholder="z. B. Pferd lahmt vorne links"></textarea></label>
+      <div id="gSummary" class="muted small"></div>
+      <div id="gSend" style="margin-top:10px"></div>
+      <p class="muted small" style="margin-top:10px">Mit dem Absenden wird Ihre Buchung an ${esc(p.n)} übermittelt. Sie erhalten anschließend eine Bestätigung.
+      Ihre Angaben werden nur zur Terminvereinbarung verwendet.</p></div></div></div>`;
+
+  const app = $('#app');
+  const firstFree = (() => { for (let d = from > todayDs() ? from : todayDs(); d <= to; d = addDays(d, 1)) if (avail.starts(d, duration()).length) return d; return null; })();
+  const cal = mountCalendar($('#gCal'), { isFree: d => avail.starts(d, duration()).length > 0, selected: null, startMonth: firstFree,
+    onSelect: d => { st.date = d; st.start = null; showTimes(); update(); } });
+  function showTimes() {
+    if (!st.date) return;
+    const starts = avail.starts(st.date, duration());
+    if (!starts.includes(st.start)) st.start = null;
+    $('#gTimes').innerHTML = `<div class="muted small" style="margin-bottom:6px">${fmtDateLong(st.date)}</div><div id="gTimeGrid"></div>`;
+    mountTimes($('#gTimeGrid'), starts, duration(), st.start, t => { st.start = t; update(); });
+  }
+  function readGuest() {
+    if (pre) return { i: pre.i, o: pre.o, s: pre.s, a: pre.a, t: pre.t, e: pre.e, h: st.horses, n: st.count };
+    const v = id => ($('#' + id) || {}).value?.trim() || '';
+    const hn = v('gHorses');
+    return { o: v('gOwner'), t: v('gPhone'), s: v('gStable'), e: v('gMail'), a: v('gAddr'), n: st.count, hn,
+      h: hn ? hn.split(/[,;\n]+/).map(x => x.trim()).filter(Boolean) : [] };
+  }
+  function update() {
+    $('#gDur').textContent = duration();
+    const g = readGuest();
+    const missing = [];
+    if (!pre) { if (!g.o) missing.push('Name'); if (!g.t) missing.push('Telefon'); if (!g.a) missing.push('Anschrift des Stalls'); }
+    if (st.count < 1) missing.push('mind. 1 Pferd');
+    if (!st.date) missing.push('Tag'); if (st.start === null) missing.push('Uhrzeit');
+    $('#gSummary').innerHTML = st.date && st.start !== null
+      ? `<b style="color:var(--brand)">${fmtDateLong(st.date)}, ${fmtTime(st.start)} – ${fmtTime(st.start + duration())} Uhr</b>` : '';
+    const send = $('#gSend');
+    if (missing.length) { send.innerHTML = `<button class="primary big" disabled>Termin verbindlich buchen</button><p class="muted small">Es fehlt noch: ${missing.join(', ')}</p>`; return; }
+    send.innerHTML = `${p.p ? '<button class="wa big" id="gWa">✅ Verbindlich buchen per WhatsApp</button>' : ''}
+      ${p.m ? `<button class="${p.p ? '' : 'primary '}big" id="gMailBtn" style="margin-top:8px">✅ Verbindlich buchen per E-Mail</button>` : ''}`;
+    const go = async via => {
+      const g2 = readGuest();
+      if (!pre) localStorage.setItem(guestKey, JSON.stringify({ o: g2.o, t: g2.t, s: g2.s, e: g2.e, a: g2.a, hn: g2.hn, count: st.count }));
+      const req = { v: 1, q: uid(), d: st.date, s: st.start, e: st.start + duration(), c: { ...g2, hn: undefined }, k: $('#gNote').value.trim() };
+      const link = baseUrl() + '#r=' + await pack(req);
+      const text = `Verbindliche Terminbuchung
+📅 ${fmtDateLong(st.date)}, ${fmtTime(st.start)}–${fmtTime(req.e)} Uhr
+👤 ${g2.o}${g2.s ? ' (' + g2.s + ')' : ''}
+📍 ${g2.a || ''}
+🐴 ${g2.h.length ? g2.h.join(', ') : st.count + ' Pferd(e)'}${req.k ? '\n💬 ' + req.k : ''}
+
+In den Kalender übernehmen:
+${link}`;
+      if (via === 'wa') location.href = waLink(p.p, text); else location.href = mailLink(p.m, `Terminbuchung ${fmtDate(st.date)} ${fmtTime(st.start)}`, text);
+      setTimeout(() => {
+        $('#app').innerHTML = `<div class="card" style="text-align:center"><h2>Fast geschafft ✅</h2>
+          <p>Bitte senden Sie die vorbereitete ${via === 'wa' ? 'WhatsApp-Nachricht' : 'E-Mail'} ab.</p>
+          <p><b>${fmtDateLong(st.date)}<br>${fmtTime(st.start)} – ${fmtTime(req.e)} Uhr</b></p>
+          <p class="muted small">Sie erhalten eine Bestätigung von ${esc(p.n)}.</p>
+          <button onclick="location.reload()">Zurück</button></div>`;
+      }, 600);
+    };
+    if ($('#gWa')) $('#gWa').onclick = () => go('wa');
+    if ($('#gMailBtn')) $('#gMailBtn').onclick = () => go('mail');
+  }
+  app.addEventListener('input', e => {
+    if (e.target.id === 'gCount') { st.count = Math.max(1, Number(e.target.value) || 1); cal.refresh(); showTimes(); }
+    update();
+  });
+  app.addEventListener('change', e => {
+    if (e.target.type === 'checkbox') { st.horses = $$('.chk input:checked', app).map(i => i.value); st.count = st.horses.length; cal.refresh(); showTimes(); update(); }
+  });
+  if (!firstFree) $('#gCal').insertAdjacentHTML('beforeend', '<p class="muted small">Im angebotenen Zeitraum ist leider nichts mehr frei.</p>');
+  update();
+}
+
+/* =====================================================================
+   Start
+   ===================================================================== */
+async function boot() {
+  const h = location.hash;
+  if (h.startsWith('#b=')) return renderCustomer(h.slice(3));
+  render();
+  if (h.startsWith('#r=')) { const packed = h.slice(3); history.replaceState(null, '', baseUrl()); await handleRequest(packed); }
+}
+window.addEventListener('hashchange', () => location.reload());
+boot();
+</script>
+</body>
+</html>
