@@ -49,6 +49,13 @@ Einmalige Einrichtung (ca. 15 Minuten), im selben Google-Konto wie die Essenslis
 Danach auf beiden Geräten `…/verwaltung.html` öffnen und anmelden. Daten, die schon lokal auf einem Gerät liegen,
 werden bei der ersten Anmeldung automatisch hochgeladen.
 
+## Für Kunden: Termin verwalten, Kalender, Erinnerungen
+- Jede Bestätigung enthält einen persönlichen Link „Termin verwalten“ (`buchen.html#t=…`, nicht erratbar).
+  Darüber kann der Kunde den Termin in seinen Kalender eintragen (mit Erinnerung 1 Tag und 2 Stunden vorher),
+  **stornieren** oder **umbuchen** – bis 3 Stunden vor dem Termin. Die Frist prüft die Datenbank selbst.
+- Stornos und Umbuchungen erscheinen sofort in der Verwaltung („Vom Kunden storniert“ bzw. „Vom Kunden umgebucht“).
+- Unter „Termine“ zeigt „Erinnerungen fällig“ die Termine von morgen und heute; ein Tipp öffnet WhatsApp mit fertigem Text.
+
 ## Ohne Online-Speicher (nur lokal)
 - Der QR-Code enthält die freien Zeiten zum Zeitpunkt der Erzeugung. Nach neuen Terminen neu erzeugen.
 - Buchungen kommen als WhatsApp/E-Mail mit Link. Ein Tipp darauf trägt den Termin ein (mit Überschneidungs-Warnung).

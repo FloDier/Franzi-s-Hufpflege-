@@ -20,18 +20,34 @@ service cloud.firestore {
     // Öffentliche Angaben für die Kundenseite (Arbeitszeiten, Puffer, Name …)
     match /public/info    { allow read: if true; allow write: if team(); }
 
-    // Belegte Zeiten je Tag, OHNE Namen. Kunden dürfen nur genau einen Eintrag anhängen,
-    // und nur zusammen mit ihrer eigenen neuen Buchung.
+    // Belegte Zeiten je Tag, OHNE Namen. Kunden dürfen höchstens einen Eintrag hinzufügen und/oder
+    // einen entfernen – und nur passend zu ihrer eigenen Buchung, Stornierung oder Umbuchung.
     match /busy/{date} {
       allow read: if true;
       allow write: if team();
-      allow create, update: if !team() && validBusyAppend(date);
+      allow create, update: if !team() && validBusyChange(date);
     }
 
-    // Termine: Team darf alles. Kunden dürfen nur eine neue Online-Buchung anlegen (nicht lesen!).
+    // Termine: Team darf alles. Kunden dürfen eine neue Online-Buchung anlegen (nicht lesen!)
+    // und ihren EIGENEN Termin bis 3 Stunden vorher stornieren oder umbuchen –
+    // dafür müssen sie den geheimen Code aus ihrem persönlichen Link kennen.
     match /appts/{id} {
       allow read, write: if team();
       allow create: if !team() && validBooking(id);
+      allow update: if !team() && validCustomerChange(id);
+    }
+
+    // „Termin verwalten“-Seite: Dokumentname = geheimer Code aus dem Link (nicht erratbar).
+    // Einzeln lesbar, aber nicht auflistbar.
+    match /manage/{secret} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if team();
+      allow create: if !team() && secret.size() == 32 && validManage()
+        && getAfter(/databases/$(database)/documents/appts/$(request.resource.data.apptId)).data.ms == secret;
+      allow update: if !team() && validManage()
+        && request.resource.data.apptId == resource.data.apptId
+        && getAfter(/databases/$(database)/documents/appts/$(resource.data.apptId)).data.proof == secret;
     }
 
     match /{document=**} { allow read, write: if false; }
@@ -39,21 +55,64 @@ service cloud.firestore {
     function isDay(d) { return d is string && d.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}'); }
     function optStr(m, k, max) { return !(k in m) || (m[k] is string && m[k].size() <= max); }
 
-    function validBusyAppend(date) {
+    function validBusyChange(date) {
       let n = request.resource.data.iv;
       let old = resource == null ? [] : resource.data.iv;
-      let newId = n[n.size() - 1].split('-')[2];
+      let added = n.removeAll(old);
+      let removed = old.removeAll(n);
       return isDay(date)
         && request.resource.data.keys().hasOnly(['iv'])
-        && n is list && n.size() == old.size() + 1 && n.size() <= 80
-        && n.hasAll(old)
-        && getAfter(/databases/$(database)/documents/appts/$(newId)).data.date == date;
+        && n is list && n.size() <= 80
+        && added.size() <= 1 && removed.size() <= 1 && added.size() + removed.size() >= 1
+        && (added.size() == 0 || busyAddOk(date, added[0]))
+        && (removed.size() == 0 || busyRemoveOk(date, removed[0]));
+    }
+    // Neuer Eintrag muss genau zu einem (neuen oder umgebuchten) Termin an diesem Tag passen
+    function busyAddOk(date, k) {
+      let id = k.split('-')[2];
+      let a = getAfter(/databases/$(database)/documents/appts/$(id)).data;
+      return a.date == date && a.status != 'storniert' && k == string(a.start) + '-' + string(a.end) + '-' + id;
+    }
+    // Entfernen nur, wenn der Termin wirklich storniert oder verlegt wurde
+    function busyRemoveOk(date, k) {
+      let id = k.split('-')[2];
+      let a = getAfter(/databases/$(database)/documents/appts/$(id)).data;
+      return a.status == 'storniert' || a.date != date || k != string(a.start) + '-' + string(a.end) + '-' + id;
+    }
+
+    function validManage() {
+      return request.resource.data.keys().hasOnly(['apptId', 'date', 'start', 'end', 'horses', 'count', 'name', 'stable', 'addr', 'status'])
+        && request.resource.data.apptId is string && request.resource.data.apptId.size() <= 40;
+    }
+
+    // Kunde ändert eigenen Termin: Code kennen (proof == ms), mindestens 3 Stunden vorher
+    function validCustomerChange(id) {
+      let o = resource.data;
+      let n = request.resource.data;
+      let keys = n.diff(o).affectedKeys();
+      return o.ms is string && n.proof == o.ms && n.ms == o.ms
+        && o.status != 'storniert'
+        && o.startAt is timestamp && request.time < o.startAt - duration.value(3, 'h')
+        && n.ccAt is string && n.ccAt.size() <= 40
+        && (
+          (n.status == 'storniert' && n.cc == 'storniert' && keys.hasOnly(['status', 'proof', 'cc', 'ccAt']))
+          ||
+          (n.cc == 'umgebucht' && n.status == o.status
+            && keys.hasOnly(['date', 'start', 'end', 'startAt', 'proof', 'cc', 'ccAt', 'prev'])
+            && isDay(n.date) && n.start is int && n.end is int && n.end > n.start
+            && n.end - n.start == o.end - o.start
+            && n.startAt is timestamp && n.startAt > request.time
+            && n.prev is string && n.prev.size() <= 60
+            && getAfter(/databases/$(database)/documents/busy/$(n.date)).data.iv
+                 .hasAny([string(n.start) + '-' + string(n.end) + '-' + id]))
+        );
     }
 
     function validBooking(id) {
       let d = request.resource.data;
       let r = d.request;
-      return d.keys().hasOnly(['id', 'customerId', 'date', 'start', 'end', 'horses', 'count', 'note', 'source', 'status', 'request', 'created'])
+      return d.keys().hasOnly(['id', 'customerId', 'date', 'start', 'end', 'horses', 'count', 'note', 'source', 'status', 'request', 'created', 'ms', 'startAt'])
+        && d.ms is string && d.ms.size() == 32 && d.startAt is timestamp && d.startAt > request.time
         && d.id == id && d.status == 'neu' && d.source == 'kunde' && isDay(d.date)
         && d.start is int && d.end is int && d.start >= 0 && d.end <= 1440 && d.end > d.start && d.end - d.start <= 720
         && (d.customerId == null || (d.customerId is string && d.customerId.size() <= 40))

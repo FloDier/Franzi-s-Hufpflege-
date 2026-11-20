@@ -200,6 +200,20 @@ const publicInfo = s => ({
   horizonWeeks: s.horizonWeeks, blocked: (s.blocked || []).filter(d => d >= todayDs()).sort()
 });
 const busyKey = a => `${a.start}-${a.end}-${a.id}`;
+const isActive = a => a.status !== 'storniert';
+/* Geheimer Code für den persönlichen „Termin verwalten“-Link (32 Zeichen, nicht erratbar) */
+function newSecret() {
+  const abc = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789', b = new Uint8Array(32);
+  crypto.getRandomValues(b); return Array.from(b, x => abc[x % abc.length]).join('');
+}
+const apptStartDate = a => { const d = parseDs(a.date); d.setMinutes(a.start); return d; };
+const manageUrl = ms => customerUrl() + '#t=' + ms;
+const CHANGE_LIMIT_H = 3;   // Stornieren/Umbuchen durch Kunden bis 3 Stunden vorher
+function ensureMs(a) { if (CLOUD && a && !a.ms) { a.ms = newSecret(); save(); } return a && a.ms; }
+const manageInfo = a => { const c = customerById(a.customerId), r = a.request || {};
+  return { apptId: a.id, date: a.date, start: a.start, end: a.end, horses: a.horses || [], count: a.count || 1,
+    name: c ? c.owner : (r.o || ''), stable: c ? (c.stable || '') : (r.s || ''), addr: c ? (c.stableAddr || '') : (r.a || ''),
+    status: a.status || 'bestätigt' }; };
 
 /* Änderungen erkennen (Vergleich mit dem letzten Stand aus der Datenbank) und schreiben.
    Firestore speichert Änderungen ohne Netz zwischen und sendet sie automatisch nach. */
@@ -220,17 +234,23 @@ function queueDiff() {
   for (const t of ['customers', 'appts']) {
     for (const id in cur[t]) if (cur[t][id] !== old[t][id]) {
       const obj = JSON.parse(cur[t][id]);
+      if (t === 'appts') {
+        obj.startAt = apptStartDate(obj);
+        if (obj.ms) { batch.set(fs.doc(db, 'manage', obj.ms), manageInfo(obj)); n++; }
+      }
       batch.set(fs.doc(db, t, id), obj); n++;
       if (t === 'appts') { days.add(obj.date); if (old.appts[id]) days.add(JSON.parse(old.appts[id]).date); }
     }
     for (const id in old[t]) if (!(id in cur[t])) {
       batch.delete(fs.doc(db, t, id)); n++;
+      if (t === 'appts') { const o = JSON.parse(old.appts[id]);
+        if (o.ms) { batch.set(fs.doc(db, 'manage', o.ms), { ...manageInfo(o), status: o.status === 'storniert' ? 'storniert' : 'abgesagt' }); n++; } }
       if (t === 'appts') days.add(JSON.parse(old.appts[id]).date);
     }
   }
   // Belegte Zeiten (ohne Namen) für die Kundenseite aktuell halten
   for (const d of days) {
-    const iv = data.appts.filter(a => a.date === d).map(busyKey);
+    const iv = data.appts.filter(a => a.date === d && isActive(a)).map(busyKey);
     batch.set(fs.doc(db, 'busy', d), { iv }); n++;
   }
   shadow = cur;
@@ -272,7 +292,7 @@ async function startSync(localBefore) {
       const batch = fs.writeBatch(db);
       batch.set(fs.doc(db, 'public', 'info'), publicInfo(data.settings));
       const days = [...new Set(data.appts.filter(a => a.date >= todayDs()).map(a => a.date))];
-      for (const d of days) batch.set(fs.doc(db, 'busy', d), { iv: data.appts.filter(a => a.date === d).map(busyKey) });
+      for (const d of days) batch.set(fs.doc(db, 'busy', d), { iv: data.appts.filter(a => a.date === d && isActive(a)).map(busyKey) });
       batch.commit().catch(e => console.warn(e));
     }
     localStorage.setItem(KEY, JSON.stringify(data));
@@ -281,7 +301,7 @@ async function startSync(localBefore) {
   const onMeta = snap => { pendingWrites = snap.metadata.hasPendingWrites; syncState = snap.metadata.fromCache ? 'offline' : 'ok'; showSyncState(); };
   const onErr = e => { console.warn('Abgleich:', e); syncState = e.code === 'permission-denied' ? 'denied' : 'error'; showSyncState(); if (syncState === 'denied') render(); };
   unsubs.push(fs.onSnapshot(fs.collection(db, 'customers'), { includeMetadataChanges: true }, s => { got.customers = s.docs.map(d => d.data()); onMeta(s); apply(); }, onErr));
-  unsubs.push(fs.onSnapshot(fs.collection(db, 'appts'), { includeMetadataChanges: true }, s => { got.appts = s.docs.map(d => ({ ...d.data(), id: d.id })); onMeta(s); apply(); }, onErr));
+  unsubs.push(fs.onSnapshot(fs.collection(db, 'appts'), { includeMetadataChanges: true }, s => { got.appts = s.docs.map(d => { const x = { ...d.data(), id: d.id }; delete x.startAt; delete x.proof; return x; }); onMeta(s); apply(); }, onErr));
   unsubs.push(fs.onSnapshot(fs.doc(db, 'settings', 'main'), { includeMetadataChanges: true }, s => {
     got.settings = s.exists() ? JSON.parse(s.data().json) : null; onMeta(s); apply(); }, onErr));
 }
@@ -313,11 +333,11 @@ function showSyncState() {
 function ownerAvailability(excludeApptId) {
   const s = data.settings, from = todayDs(), to = addDays(from, s.horizonWeeks * 7 - 1);
   const busy = {};
-  for (const a of data.appts) if (a.id !== excludeApptId) (busy[a.date] ||= []).push([a.start, a.end]);
+  for (const a of data.appts) if (a.id !== excludeApptId && isActive(a)) (busy[a.date] ||= []).push([a.start, a.end]);
   return makeAvailability({ work: s.work, raster: s.raster, buffer: s.buffer, blocked: s.blocked, busy, from, to });
 }
 function overlaps(date, start, end, excludeId) {
-  return data.appts.filter(a => a.id !== excludeId && a.date === date && start < a.end && end > a.start);
+  return data.appts.filter(a => a.id !== excludeId && isActive(a) && a.date === date && start < a.end && end > a.start);
 }
 
 /* =====================================================================
@@ -333,7 +353,7 @@ hiermit bestätige ich Ihren Termin:
 🕐 ${fmtTime(a.start)} – ${fmtTime(a.end)} Uhr
 🐴 ${horses}
 📍 ${c.stable ? c.stable + ', ' : ''}${c.stableAddr || ''}
-${a.note ? '\nHinweis: ' + a.note + '\n' : ''}
+${a.note ? '\nHinweis: ' + a.note + '\n' : ''}${a.ms ? `\nTermin ansehen, in den Kalender eintragen, stornieren oder umbuchen (bis ${CHANGE_LIMIT_H} Std. vorher):\n${manageUrl(a.ms)}\n` : ''}
 Viele Grüße
 ${s.name || ''}`.replace(/\n{3,}/g, '\n\n');
 }
@@ -408,8 +428,11 @@ let showPast = false;
 function renderTermine() {
   const today = todayDs();
   const sorted = [...data.appts].sort((a, b) => (a.date + pad(a.start).padStart(4, '0')).localeCompare(b.date + pad(b.start).padStart(4, '0')));
-  const fresh = sorted.filter(a => a.status === 'neu');
-  const upcoming = sorted.filter(a => a.date >= today && a.status !== 'neu'), past = sorted.filter(a => a.date < today).reverse();
+  const cancelled = sorted.filter(a => a.status === 'storniert');
+  const active = sorted.filter(isActive);
+  const fresh = active.filter(a => a.status === 'neu');
+  const upcoming = active.filter(a => a.date >= today && a.status !== 'neu'), past = active.filter(a => a.date < today).reverse();
+  const due = dueReminders();
   const group = list => {
     let h = '', last = '';
     for (const a of list) {
@@ -421,6 +444,8 @@ function renderTermine() {
           ${c && c.stableAddr ? ' · ' + esc(c.stableAddr) : ''}</div>
           ${a.note ? `<div class="small">${esc(a.note)}</div>` : ''}
           ${a.source === 'kunde' ? '<span class="pill green">vom Kunden gebucht</span>' : ''}
+          ${a.cc === 'umgebucht' ? `<div class="banner" style="margin:6px 0 0;padding:6px 10px">🔄 Vom Kunden umgebucht${a.prev ? ' (vorher ' + esc(a.prev) + ')' : ''}
+            <button class="small" style="margin-left:6px" onclick="ackChange('${a.id}')">✓ gesehen</button></div>` : ''}
           <div class="row" style="margin-top:8px">
             <button class="small" onclick="openSend('${a.id}')">📤 Senden</button>
             ${c && c.stableAddr ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(mapsUrl(c.stableAddr))}">🗺 Route</a>` : ''}
@@ -438,8 +463,18 @@ function renderTermine() {
       ${a.note ? '<br>💬 ' + esc(a.note) : ''}</div>
       <div class="row" style="margin-top:10px"><button class="primary small" onclick="confirmOnline('${a.id}')">✅ Bestätigen</button>
       <button class="small danger" onclick="rejectOnline('${a.id}')">Ablehnen</button></div></div>`; }).join('');
+  const cancelledHTML = cancelled.map(a => `<div class="card" style="border:2px solid #fca5a5"><div class="row"><b class="grow">❌ ${esc(apptLabel(a))}</b></div>
+      <div class="small">hat den Termin am ${fmtDateLong(a.date)}, ${fmtTime(a.start)} Uhr storniert. Die Zeit ist wieder frei.</div>
+      <div class="row" style="margin-top:8px"><button class="small" onclick="ackCancel('${a.id}')">✓ gesehen – entfernen</button></div></div>`).join('');
+  const dueHTML = due.map(({ a, kind }) => { const c = customerById(a.customerId) || {}, txt = reminderText(a, kind);
+    return `<div class="card"><div class="row"><div class="grow"><b>${esc(apptLabel(a))}</b>
+      <div class="muted small">${kind === 'r1' ? 'Morgen' : 'Heute'}, ${fmtTime(a.start)} Uhr</div></div>
+      <a class="btn wa small" target="_blank" rel="noopener" href="${esc(waLink(c.phone, txt))}" onclick="setTimeout(()=>markReminder('${a.id}','${kind}'),400)">💬 Erinnern</a>
+      <button class="small" title="ohne Nachricht als erledigt markieren" onclick="markReminder('${a.id}','${kind}')">✓</button></div></div>`; }).join('');
   $('#app').innerHTML = `${backupBanner()}
     ${fresh.length ? `<h3>Neue Online-Buchungen (${fresh.length})</h3>${freshHTML}` : ''}
+    ${cancelled.length ? `<h3>Vom Kunden storniert (${cancelled.length})</h3>${cancelledHTML}` : ''}
+    ${due.length ? `<h3>Erinnerungen fällig (${due.length})</h3>${dueHTML}` : ''}
     ${CLOUD ? '' : `<div class="card"><b>Buchungsanfrage übernehmen</b>
       <p class="muted small" style="margin:4px 0 8px">Kunden schicken Ihnen nach der Buchung einen Link. Tippen Sie ihn an – oder fügen Sie ihn hier ein.</p>
       <div class="row"><input class="grow" id="reqInput" placeholder="Link aus WhatsApp/E-Mail einfügen">
@@ -450,6 +485,25 @@ function renderTermine() {
       ${showPast ? group(past) : ''}` : ''}
     <button class="primary fab" onclick="openApptEditor()">+ Neuer Termin</button>`;
 }
+/* Erinnerungen: morgen (r1) und heute (r2) – ein Tipp öffnet WhatsApp mit fertigem Text */
+function dueReminders() {
+  const today = todayDs(), tomorrow = addDays(today, 1), now = nowMin();
+  return data.appts.filter(a => isActive(a) && a.status !== 'neu').flatMap(a => [
+    ...(a.date === tomorrow && !a.r1 ? [{ a, kind: 'r1' }] : []),
+    ...(a.date === today && !a.r2 && a.start > now ? [{ a, kind: 'r2' }] : [])
+  ]).sort((x, y) => (x.a.date + pad(x.a.start).padStart(4, '0')).localeCompare(y.a.date + pad(y.a.start).padStart(4, '0')));
+}
+function reminderText(a, kind) {
+  const c = customerById(a.customerId) || {}, horses = a.horses && a.horses.length ? a.horses.join(', ') : `${a.count} Pferd(e)`;
+  const when = kind === 'r1' ? `morgen, ${fmtDateLong(a.date)}, um ${fmtTime(a.start)} Uhr` : `heute um ${fmtTime(a.start)} Uhr`;
+  return `Hallo ${c.owner || ''},\n\nkleine Erinnerung: Ich komme ${when} zu ${horses}${c.stable ? ' (' + c.stable + ')' : ''}.` +
+    (a.ms && kind === 'r1' ? `\n\nFalls etwas dazwischenkommt, können Sie hier bis ${CHANGE_LIMIT_H} Std. vorher absagen oder umbuchen:\n${manageUrl(a.ms)}` : '') +
+    `\n\nViele Grüße\n${data.settings.name || ''}`;
+}
+function markReminder(id, kind) { const a = data.appts.find(x => x.id === id); if (!a) return; a[kind] = true; save(); render(); }
+function ackChange(id) { const a = data.appts.find(x => x.id === id); if (!a) return; delete a.cc; delete a.ccAt; delete a.prev; save(); render(); }
+function ackCancel(id) { data.appts = data.appts.filter(x => x.id !== id); save(); render(); }
+
 function deleteAppt(id) {
   const a = data.appts.find(x => x.id === id); if (!a) return;
   if (!confirm(`Termin am ${fmtDate(a.date)} um ${fmtTime(a.start)} löschen?`)) return;
@@ -462,6 +516,7 @@ function deleteAppt(id) {
 }
 function openSend(id) {
   const a = data.appts.find(x => x.id === id), c = customerById(a.customerId) || {};
+  ensureMs(a);
   openModal('Termin senden', `<p class="muted small">An: ${esc(c.owner || '')} ${c.phone ? '· ' + esc(c.phone) : ''} ${c.mail ? '· ' + esc(c.mail) : ''}</p>
     <textarea id="sendText" style="width:100%;min-height:220px">${esc(apptMessage(a))}</textarea><div id="sendBtns" style="margin-top:10px"></div>`, body => {
     const upd = () => { $('#sendBtns', body).innerHTML = sendButtons(c.phone, c.mail, `Termin am ${fmtDate(a.date)}`, $('#sendText', body).value); };
@@ -964,8 +1019,11 @@ async function renderCustomer(packed, live) {
         $('#app').innerHTML = `<div class="card" style="text-align:center"><h2>Termin gebucht ✅</h2>
           <p><b>${fmtDateLong(st.date)}<br>${fmtTime(st.start)} – ${fmtTime(end)} Uhr</b></p>
           <p>Ihr Termin ist fest reserviert. ${esc(p.n)} meldet sich mit einer Bestätigung.</p>
-          ${p.p ? `<a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(p.p, text))}">Zusätzlich per WhatsApp Bescheid geben</a>` : ''}
-          <p class="muted small" style="margin-top:14px">Sie können diese Seite jetzt schließen.</p></div>`;
+          <div style="display:grid;gap:8px;margin:12px 0">${calendarButtons({ date: st.date, start: st.start, end, addr: g2.a, horses: g2.h, count: st.count }, p.n)}
+          <a class="btn big" href="${esc(manageUrl(res.ms))}">✏️ Termin verwalten (stornieren / umbuchen)</a></div>
+          <p class="small">Stornieren oder umbuchen können Sie bis ${CHANGE_LIMIT_H} Stunden vor dem Termin über
+          <b>„Termin verwalten“</b>. Den Link finden Sie auch in der Bestätigung von ${esc(p.n)}.</p>
+          ${p.p ? `<a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(p.p, text + '\n\nTermin verwalten: ' + manageUrl(res.ms)))}">Zusätzlich per WhatsApp Bescheid geben</a>` : ''}</div>`;
       };
       return;
     }
@@ -1036,19 +1094,20 @@ async function boot() {
     if (h.startsWith('#r=')) return location.replace(ownerUrl() + h);
   }
   if (PAGE === 'karte') {
-    if (h.startsWith('#b=') || h.startsWith('#live')) return location.replace(customerUrl() + h);   // alte Buchungslinks
+    if (h.startsWith('#b=') || h.startsWith('#live') || h.startsWith('#t=')) return location.replace(customerUrl() + h);   // Buchungs-/Verwalten-Links
     // Altes Home-Bildschirm-Symbol der Betreiberin zeigt auf die Hauptadresse → Verwaltung öffnen
     const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
     if (!h && standalone && (localStorage.getItem(KEY + '-auth') || (loadJSON(KEY, {}).customers || []).length)) return location.replace(ownerUrl());
     return renderKarte();
   }
   if (PAGE === 'kunde') {
+    if (h.startsWith('#t=')) return CLOUD ? renderManage(h.slice(3)) : renderNoBooking();
     if (h.startsWith('#b=')) return renderCustomer(h.slice(3));
     if (h.startsWith('#live=')) return CLOUD ? renderCustomer(h.slice(6), true) : renderNoBooking();
     return CLOUD ? renderCustomer('', true) : renderNoBooking();
   }
   // Verwaltung: Kunden-Links gehören auf die Buchungsseite
-  if (h.startsWith('#b=') || h.startsWith('#live')) return location.replace(customerUrl() + h);
+  if (h.startsWith('#b=') || h.startsWith('#live') || h.startsWith('#t=')) return location.replace(customerUrl() + h);
   render();
   if (CLOUD) {
     try { await fb(); } catch (e) { cloud.ready = true; $('#app').innerHTML = '<div class="card">Verbindung zum Online-Speicher nicht möglich. Bitte Seite neu laden.</div>'; return; }
@@ -1077,7 +1136,7 @@ async function loadBookingInfo() {
    Buchen zwei Kunden gleichzeitig, wiederholt Firestore die Prüfung → der zweite bekommt „belegt“. */
 async function bookSlot(date, start, end, cust, note, buffer) {
   const { fs, db } = await fb();
-  const id = 'k' + uid();
+  const id = 'k' + uid(), ms = newSecret();
   const clean = o => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ''));
   const request = clean({ i: cust.i, o: String(cust.o || '').slice(0, 100), s: cust.s, a: cust.a, t: String(cust.t || '').slice(0, 40), e: cust.e,
     h: (cust.h || []).slice(0, 20), n: cust.n });
@@ -1089,12 +1148,166 @@ async function bookSlot(date, start, end, cust, note, buffer) {
       const clash = iv.some(k => { const [a, b] = k.split('-').map(Number); return start < b + buffer && end + buffer > a; });
       if (clash) throw new Error('belegt');
       tx.set(fs.doc(db, 'appts', id), { id, customerId: cust.i || null, date, start, end, horses: request.h || [], count: Math.max(1, Number(cust.n) || (request.h || []).length || 1),
-        note: String(note || '').slice(0, 1000), source: 'kunde', status: 'neu', request, created: new Date().toISOString() });
+        note: String(note || '').slice(0, 1000), source: 'kunde', status: 'neu', request, created: new Date().toISOString(),
+        ms, startAt: apptStartDate({ date, start }) });
       tx.set(ref, { iv: [...iv, `${start}-${end}-${id}`] });
+      tx.set(fs.doc(db, 'manage', ms), { apptId: id, date, start, end, horses: request.h || [], count: Math.max(1, Number(cust.n) || (request.h || []).length || 1),
+        name: request.o, stable: request.s || '', addr: request.a || '', status: 'neu' });
     });
-    return { ok: true, id };
+    return { ok: true, id, ms };
   } catch (e) {
     if (e.message === 'belegt') return { ok: false, error: 'belegt' };
+    if (attempt >= 2) throw e;
+    await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
+  }
+}
+
+/* ---------- Kalendereintrag mit Erinnerung 1 Tag und 2 Stunden vorher ---------- */
+function icsFor(t, ownerName) {
+  const z = d => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const e = v => String(v || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+  const st = apptStartDate(t), en = apptStartDate({ date: t.date, start: t.end });
+  const horses = t.horses && t.horses.length ? t.horses.join(', ') : `${t.count || 1} Pferd(e)`;
+  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Franzis Hufpflege//Termin//DE', 'METHOD:PUBLISH', 'BEGIN:VEVENT',
+    `UID:${t.date}-${t.start}-${Math.random().toString(36).slice(2)}@hufpflege`, `DTSTAMP:${z(new Date())}`,
+    `DTSTART:${z(st)}`, `DTEND:${z(en)}`, `SUMMARY:${e('Hufpflege – ' + (ownerName || ''))}`,
+    t.addr ? `LOCATION:${e(t.addr)}` : '', `DESCRIPTION:${e('Pferde: ' + horses)}`,
+    'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Hufpflege morgen', 'TRIGGER:-P1D', 'END:VALARM',
+    'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Hufpflege in 2 Stunden', 'TRIGGER:-PT2H', 'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR'].filter(Boolean).join('\r\n') + '\r\n';
+}
+function googleCalUrl(t, ownerName) {
+  const z = d => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const horses = t.horses && t.horses.length ? t.horses.join(', ') : `${t.count || 1} Pferd(e)`;
+  return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent('Hufpflege – ' + (ownerName || '')) +
+    '&dates=' + z(apptStartDate(t)) + '/' + z(apptStartDate({ date: t.date, start: t.end })) +
+    '&details=' + encodeURIComponent('Pferde: ' + horses) + (t.addr ? '&location=' + encodeURIComponent(t.addr) : '');
+}
+let lastCal = null;
+function calendarButtons(t, ownerName) {
+  lastCal = { t, ownerName };
+  return `<button class="btn big primary" type="button" onclick="downloadIcs()">📅 In meinen Kalender (mit Erinnerung)</button>
+    <a class="btn big" target="_blank" rel="noopener" href="${esc(googleCalUrl(t, ownerName))}">📅 Google Kalender</a>`;
+}
+function downloadIcs() {
+  if (!lastCal) return;
+  const blob = new Blob([icsFor(lastCal.t, lastCal.ownerName)], { type: 'text/calendar' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'Hufpflege-Termin.ics';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/* ---------- „Termin verwalten“: Kunde sieht, storniert oder bucht um (bis 3 Std. vorher) ---------- */
+async function renderManage(secret) {
+  if ($('#tabs')) $('#tabs').style.display = 'none';
+  $('#subtitle').textContent = 'Ihr Termin';
+  $('#app').innerHTML = '<div class="card">Termin wird geladen …</div>';
+  let info, m;
+  try {
+    const { fs, db } = await fb();
+    const snap = await fs.getDoc(fs.doc(db, 'manage', secret));
+    if (!snap.exists()) { $('#app').innerHTML = '<div class="card"><h2>Termin nicht gefunden</h2><p>Dieser Link ist ungültig oder abgelaufen.</p></div>'; return; }
+    m = snap.data();
+    info = await loadBookingInfo();
+  } catch (e) { console.warn(e); $('#app').innerHTML = '<div class="card"><h2>Keine Verbindung</h2><p>Bitte prüfen Sie Ihre Internetverbindung.</p><button onclick="location.reload()">Erneut versuchen</button></div>'; return; }
+  const owner = (info && info.ok && info.name) || "Franzi's Hufpflege", phone = info && info.phone;
+  $('#title').textContent = owner;
+  const startD = apptStartDate(m), deadline = new Date(startD.getTime() - CHANGE_LIMIT_H * 3600e3);
+  const canChange = !['storniert', 'abgesagt'].includes(m.status) && new Date() < deadline;
+  const horses = m.horses && m.horses.length ? m.horses.join(', ') : `${m.count || 1} Pferd(e)`;
+  const statusTxt = m.status === 'storniert' ? '<div class="banner">❌ Dieser Termin wurde storniert.</div>'
+    : m.status === 'abgesagt' ? `<div class="banner">❌ Dieser Termin wurde von ${esc(owner)} abgesagt.</div>`
+    : m.status === 'neu' ? '<span class="pill green">gebucht – Bestätigung folgt</span>' : '<span class="pill green">bestätigt</span>';
+  $('#app').innerHTML = `<div class="hero"><img src="apple-touch-icon.png" alt="Logo"></div>
+    <div class="card"><h2>Ihr Termin</h2>${statusTxt}
+      <p style="font-size:18px;margin:10px 0"><b>${fmtDateLong(m.date)}</b><br>${fmtTime(m.start)} – ${fmtTime(m.end)} Uhr</p>
+      <div class="small">🐴 ${esc(horses)}${m.name ? '<br>👤 ' + esc(m.name) : ''}${m.stable ? ' · ' + esc(m.stable) : ''}${m.addr ? '<br>📍 ' + esc(m.addr) : ''}</div></div>
+    ${!['storniert', 'abgesagt'].includes(m.status) ? `<div class="card" style="display:grid;gap:8px">${calendarButtons(m, owner)}</div>` : ''}
+    ${canChange ? `<div class="card"><b>Etwas dazwischengekommen?</b>
+        <p class="muted small" style="margin:4px 0 10px">Möglich bis ${fmtDate(ds(deadline))}, ${fmtTime(deadline.getHours() * 60 + deadline.getMinutes())} Uhr (${CHANGE_LIMIT_H} Stunden vorher).</p>
+        <div style="display:grid;gap:8px"><button class="big primary" id="mRebook">🔄 Termin umbuchen</button>
+        <button class="big danger" id="mCancel">❌ Termin stornieren</button></div></div><div id="mRebookArea"></div>`
+      : !['storniert', 'abgesagt'].includes(m.status) ? `<div class="card small">Stornieren oder Umbuchen ist nur bis ${CHANGE_LIMIT_H} Stunden vor dem Termin online möglich.
+        Bitte melden Sie sich direkt bei ${esc(owner)}.${phone ? `<div style="margin-top:8px"><a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(phone, `Hallo, zu meinem Termin am ${fmtDateLong(m.date)} um ${fmtTime(m.start)} Uhr: `))}">💬 WhatsApp</a></div>` : ''}</div>` : ''}
+`;
+  if (!canChange) return;
+  $('#mCancel').onclick = async () => {
+    if (!confirm(`Termin am ${fmtDateLong(m.date)} um ${fmtTime(m.start)} Uhr wirklich stornieren?`)) return;
+    try { await customerChange(secret, m, null); }
+    catch (e) { console.warn(e); alert('Stornieren hat nicht geklappt. Bitte erneut versuchen' + (new Date() >= deadline ? ' – die Frist ist inzwischen abgelaufen.' : '.')); return renderManage(secret); }
+    $('#app').innerHTML = `<div class="card" style="text-align:center"><h2>Termin storniert</h2><p>Ihr Termin am ${fmtDateLong(m.date)} um ${fmtTime(m.start)} Uhr wurde storniert.
+      ${esc(owner)} sieht das sofort.</p><a class="btn big primary" href="${esc(customerUrl() + '#live')}">Neuen Termin buchen</a></div>`;
+  };
+  $('#mRebook').onclick = () => {
+    $('#mRebook').disabled = true;
+    const dur = m.end - m.start, from = todayDs(), to = addDays(from, info.horizonWeeks * 7);
+    const ownKey = `${m.start}-${m.end}-${m.apptId}`;
+    let busy = {};
+    const rebuild = list => { busy = {}; for (const [d, a, b, k] of list) if (k !== ownKey) (busy[d] ||= []).push([a, b]); };
+    rebuild(info.busy.map(([d, a, b]) => [d, a, b, `${a}-${b}-?`]));
+    // eigene Zeit nicht als belegt zählen
+    if (busy[m.date]) busy[m.date] = busy[m.date].filter(([a, b]) => !(a === m.start && b === m.end));
+    let avail = makeAvailability({ work: info.work, raster: info.raster, buffer: info.buffer, blocked: info.blocked, busy, from, to });
+    const st = { date: null, start: null };
+    $('#mRebookArea').innerHTML = `<div class="card"><b>Neuen Tag wählen</b> <span class="muted small">(grün = frei)</span><div id="rbCal" style="margin-top:8px"></div></div>
+      <div class="card"><b>Neue Uhrzeit</b><div id="rbTimes" class="muted small" style="margin-top:8px">Bitte zuerst einen grünen Tag wählen.</div></div>
+      <div class="card"><button class="big primary" id="rbGo" disabled>Auf neuen Termin umbuchen</button></div>`;
+    const cal = mountCalendar($('#rbCal'), { isFree: d => avail.starts(d, dur).length > 0, selected: null, startMonth: m.date,
+      onSelect: d => { st.date = d; st.start = null; showT(); } });
+    const showT = () => { if (!st.date) return; const starts = avail.starts(st.date, dur).filter(t => !(st.date === m.date && t === m.start));
+      if (!starts.includes(st.start)) st.start = null;
+      mountTimes($('#rbTimes'), starts, dur, st.start, t => { st.start = t; $('#rbGo').disabled = false; });
+      $('#rbGo').disabled = st.start === null; };
+    // Live: Zeiten, die andere gerade buchen, verschwinden sofort
+    fb().then(({ fs, db }) => {
+      const q = fs.query(fs.collection(db, 'busy'), fs.where(fs.documentId(), '>=', from), fs.where(fs.documentId(), '<=', to));
+      const unsub = fs.onSnapshot(q, snap => {
+        if (!$('#rbCal')) return unsub();
+        const list = []; snap.forEach(d => (d.data().iv || []).forEach(k => { const [a, b] = k.split('-').map(Number); list.push([d.id, a, b, k]); }));
+        rebuild(list);
+        avail = makeAvailability({ work: info.work, raster: info.raster, buffer: info.buffer, blocked: info.blocked, busy, from, to });
+        cal.refresh(); showT();
+      });
+    });
+    $('#mRebookArea').scrollIntoView({ behavior: 'smooth' });
+    $('#rbGo').onclick = async () => {
+      const btn = $('#rbGo'); btn.disabled = true; btn.textContent = 'Wird umgebucht …';
+      let res;
+      try { res = await customerChange(secret, m, { date: st.date, start: st.start, end: st.start + dur }, info.buffer); }
+      catch (e) { console.warn(e); alert('Umbuchen hat nicht geklappt. Bitte erneut versuchen.'); return renderManage(secret); }
+      if (res === 'belegt') { alert('Diese Uhrzeit wurde gerade vergeben. Bitte wählen Sie eine andere.'); btn.textContent = 'Auf neuen Termin umbuchen'; st.start = null; showT(); return; }
+      renderManage(secret).then(() => toast('Termin umgebucht'));
+    };
+  };
+}
+/* Stornieren (neu = null) oder Umbuchen – als Transaktion: Termin, Belegt-Zeiten und Verwalten-Seite gemeinsam */
+async function customerChange(secret, m, neu, buffer = 0) {
+  const { fs, db } = await fb();
+  const id = m.apptId, oldKey = `${m.start}-${m.end}-${id}`, ccAt = new Date().toISOString();
+  for (let attempt = 0; ; attempt++) try {
+    let result = 'ok';
+    await fs.runTransaction(db, async tx => {
+      const mRef = fs.doc(db, 'manage', secret), cur = (await tx.get(mRef)).data();
+      const curKey = `${cur.start}-${cur.end}-${id}`;
+      const oldRef = fs.doc(db, 'busy', cur.date), oldIv = ((await tx.get(oldRef)).data() || {}).iv || [];
+      if (!neu) {
+        tx.update(fs.doc(db, 'appts', id), { status: 'storniert', proof: secret, cc: 'storniert', ccAt });
+        tx.set(oldRef, { iv: oldIv.filter(k => k !== curKey) });
+        tx.update(mRef, { status: 'storniert' });
+        return;
+      }
+      const newKey = `${neu.start}-${neu.end}-${id}`, same = neu.date === cur.date;
+      const newRef = fs.doc(db, 'busy', neu.date);
+      const newIv = same ? oldIv : (((await tx.get(newRef)).data() || {}).iv || []);
+      const clash = newIv.some(k => k !== curKey && (() => { const [a, b] = k.split('-').map(Number); return neu.start < b + buffer && neu.end + buffer > a; })());
+      if (clash) { result = 'belegt'; return; }
+      tx.update(fs.doc(db, 'appts', id), { date: neu.date, start: neu.start, end: neu.end, startAt: apptStartDate(neu),
+        proof: secret, cc: 'umgebucht', ccAt, prev: `${fmtDate(cur.date)} ${fmtTime(cur.start)}` });
+      if (same) tx.set(oldRef, { iv: [...oldIv.filter(k => k !== curKey), newKey] });
+      else { tx.set(oldRef, { iv: oldIv.filter(k => k !== curKey) }); tx.set(newRef, { iv: [...newIv, newKey] }); }
+      tx.update(mRef, { date: neu.date, start: neu.start, end: neu.end });
+    });
+    return result;
+  } catch (e) {
     if (attempt >= 2) throw e;
     await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
   }
