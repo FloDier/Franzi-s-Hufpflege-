@@ -63,6 +63,9 @@ werden bei der ersten Anmeldung automatisch hochgeladen.
   Solange Pflichtangaben fehlen, entstehen nur **Entwürfe ohne Nummer**.
 - Fortlaufende Rechnungsnummern (z. B. 2026-001), auch bei zwei Geräten eindeutig. Rechnungen sind danach nicht mehr
   änderbar (nur Status offen/bezahlt) und nicht löschbar; Korrektur über **Storno** (Stornorechnung mit eigener Nummer).
+- Standard-Zahlart ist **bar** (in den Einstellungen änderbar); bei Barzahlung steht „Betrag in bar erhalten“ auf der Rechnung.
+- Reiter **🧾 Rechnungen**: Monat wählen, Summen (bar / Überweisung / offen) und **„Monat drucken“** – eine PDF mit
+  Übersichtsseite und allen Rechnungen des Monats, zum Ausdrucken und Abheften.
 - PDF-Bibliothek: `vendor/jspdf.umd.min.js` (jsPDF, MIT-Lizenz).
 
 ## Ohne Online-Speicher (nur lokal)

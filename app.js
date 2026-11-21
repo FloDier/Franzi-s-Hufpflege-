@@ -140,7 +140,7 @@ const DEFAULT_SETTINGS = {
   raster: 30, minPerHorse: 45, buffer: 30, horizonWeeks: 8, blocked: [], lastBackup: null,
   // Rechnungen (Preise sind Endpreise; bei MwSt-Pflicht inkl. MwSt)
   inv: { fullName: '', street: '', zip: '', city: '', taxNo: '', vatId: '', taxMode: 'klein', vatRate: 19,
-    iban: '', bic: '', bank: '', holder: '', payDays: 14, pricePerHorse: 0, travelFee: 0 }
+    iban: '', bic: '', bank: '', holder: '', payDays: 14, pricePerHorse: 0, travelFee: 0, defaultPay: 'bar' }
 };
 let data = load();
 function load() {
@@ -379,7 +379,7 @@ document.addEventListener('click', e => {
 /* =====================================================================
    BETREIBER-OBERFLÄCHE
    ===================================================================== */
-const TABS = [['termine', '📅 Termine'], ['kunden', '🐴 Kunden'], ['buchung', '🔗 QR / Link'], ['einstellungen', '⚙️ Einstellungen']];
+const TABS = [['termine', '📅 Termine'], ['kunden', '🐴 Kunden'], ['rechnungen', '🧾 Rechnungen'], ['buchung', '🔗 QR / Link'], ['einstellungen', '⚙️ Einstellungen']];
 let tab = 'termine';
 function renderTabs() {
   $('#tabs').innerHTML = TABS.map(([k, l]) => `<button class="${k === tab ? 'active' : ''}" data-tab="${k}">${l}</button>`).join('');
@@ -393,7 +393,7 @@ function render() {
   $('#tabs').style.display = '';
   renderTabs(); showSyncState();
   $('#app').onchange = null;
-  ({ termine: renderTermine, kunden: renderKunden, buchung: renderBuchung, einstellungen: renderEinstellungen })[tab]();
+  ({ termine: renderTermine, kunden: renderKunden, rechnungen: renderRechnungen, buchung: renderBuchung, einstellungen: renderEinstellungen })[tab]();
 }
 
 function backupBanner() {
@@ -807,6 +807,9 @@ function renderEinstellungen() {
       <label class="f">Umsatzsteuer <select id="i_taxMode">
         <option value="klein" ${s.inv.taxMode !== 'ust' ? 'selected' : ''}>Kleinunternehmerin – keine USt (§ 19 UStG)</option>
         <option value="ust" ${s.inv.taxMode === 'ust' ? 'selected' : ''}>Umsatzsteuer ausweisen</option></select></label>
+      <label class="f">Zahlungsart vorausgewählt <select id="i_defaultPay">
+        <option value="bar" ${s.inv.defaultPay !== 'ueberweisung' ? 'selected' : ''}>Bar erhalten</option>
+        <option value="ueberweisung" ${s.inv.defaultPay === 'ueberweisung' ? 'selected' : ''}>Überweisung</option></select></label>
       <div class="grid2">
         <label class="f">USt-Satz in % <input id="i_vatRate" type="number" min="0" value="${esc(s.inv.vatRate)}"></label>
         <label class="f">Zahlungsziel (Tage) <input id="i_payDays" type="number" min="0" value="${esc(s.inv.payDays)}"></label>
@@ -839,7 +842,7 @@ function renderEinstellungen() {
     s.minPerHorse = Math.max(5, Number($('#sMph').value) || 45); s.buffer = Math.max(0, Number($('#sBuf').value) || 0);
     s.raster = Number($('#sRaster').value); s.horizonWeeks = Math.min(26, Math.max(1, Number($('#sWeeks').value) || 8));
     s.inv = { ...DEFAULT_SETTINGS.inv, ...s.inv };
-    for (const k of ['fullName', 'street', 'zip', 'city', 'taxNo', 'vatId', 'taxMode', 'holder', 'iban', 'bic', 'bank', 'pricePerHorse', 'travelFee']) { const el = $('#i_' + k); if (el) s.inv[k] = el.value.trim(); }
+    for (const k of ['fullName', 'street', 'zip', 'city', 'taxNo', 'vatId', 'taxMode', 'holder', 'iban', 'bic', 'bank', 'pricePerHorse', 'travelFee', 'defaultPay']) { const el = $('#i_' + k); if (el) s.inv[k] = el.value.trim(); }
     s.inv.vatRate = Number($('#i_vatRate').value) || 19; s.inv.payDays = Number($('#i_payDays').value) || 0;
     save(); $('#title').textContent = s.name || "Franzi's Hufpflege";
   };
@@ -916,8 +919,8 @@ function openInvoiceEditor(cid) {
     <div class="row" style="margin:10px 0"><label class="chk grow" style="padding:0"><input type="checkbox" id="rTravelOn" ${toCents(inv.travelFee) > 0 ? 'checked' : ''}> Anfahrtspauschale</label>
       <input id="rTravel" inputmode="decimal" value="${centsToInput(toCents(inv.travelFee))}" style="width:96px;text-align:right"> €</div>
     <div class="muted small">Zahlung</div>
-    <div class="row" style="margin:4px 0 10px"><label class="chk"><input type="radio" name="rPay" value="ueberweisung" checked> Überweisung</label>
-      <label class="chk"><input type="radio" name="rPay" value="bar"> Bar erhalten</label></div>
+    <div class="row" style="margin:4px 0 10px"><label class="chk"><input type="radio" name="rPay" value="bar" ${inv.defaultPay !== 'ueberweisung' ? 'checked' : ''}> Bar erhalten</label>
+      <label class="chk"><input type="radio" name="rPay" value="ueberweisung" ${inv.defaultPay === 'ueberweisung' ? 'checked' : ''}> Überweisung</label></div>
     <div class="card" id="rSum" style="background:var(--free-bg);border-color:var(--free-line)"></div>
     <button class="primary big" id="rGo">🧾 ${complete ? 'Rechnung erstellen' : 'Entwurf ansehen'}</button>`, body => {
     const read = () => {
@@ -993,12 +996,17 @@ async function getLogo() {
 }
 async function buildInvoicePdf(rec, draft) {
   await loadJsPdf();
-  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const logo = await getLogo().catch(() => null);
+  const doc = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+  drawInvoice(doc, rec, draft, logo);
+  return doc.output('blob');
+}
+function drawInvoice(doc, rec, draft, logo) {
   const S = rec.seller || {}, green = [22, 74, 46], grey = [110, 110, 110], dark = [25, 25, 25];
   const addr1 = [S.fullName, S.street, [S.zip, S.city].filter(Boolean).join(' ')].filter(Boolean);
   // Wasserzeichen zuerst zeichnen, damit es hinter dem Text liegt
   if (draft) { doc.setTextColor(236, 236, 236); doc.setFont('helvetica', 'bold'); doc.setFontSize(90); doc.text('ENTWURF', 45, 215, { angle: 35 }); }
-  try { doc.addImage(await getLogo(), 'PNG', 163, 12, 30, 30); } catch (e) { /* ohne Logo */ }
+  try { if (logo) doc.addImage(logo, 'PNG', 163, 12, 30, 30); } catch (e) { /* ohne Logo */ }
   doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.setTextColor(...green); doc.text(S.name || 'Hufpflege', 20, 22);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...grey);
   doc.text([...addr1, S.phone ? 'Tel. ' + S.phone : '', S.mail || ''].filter(Boolean), 20, 28);
@@ -1051,7 +1059,67 @@ async function buildInvoicePdf(rec, draft) {
   doc.setDrawColor(...green); doc.line(20, 280, 190, 280); doc.setFontSize(7.5); doc.setTextColor(...grey);
   doc.text([[S.name, ...addr1].filter(Boolean).join(' · '),
     [S.taxNo ? 'Steuernummer: ' + S.taxNo : '', S.vatId ? 'USt-IdNr.: ' + S.vatId : '', S.iban ? 'IBAN: ' + S.iban : ''].filter(Boolean).join(' · ')], 105, 285, { align: 'center' });
-  return doc.output('blob');
+}
+/* ---------- Reiter „Rechnungen“: Monatsübersicht + alles auf einmal drucken ---------- */
+let invMonth = todayDs().slice(0, 7);
+const payLabel = p => p === 'bar' ? 'bar' : 'Überweisung';
+function monthInvoices(m) { return data.invoices.filter(r => r.date.slice(0, 7) === m).sort((a, b) => (a.date + a.no).localeCompare(b.date + b.no)); }
+function monthSums(list) {
+  const t = { bar: 0, ueb: 0, offen: 0, total: 0 };
+  for (const r of list) { t.total += r.gross; if (r.pay === 'bar') t.bar += r.gross; else t.ueb += r.gross; if (r.status === 'offen') t.offen += r.gross; }
+  return t;
+}
+function renderRechnungen() {
+  const list = monthInvoices(invMonth), t = monthSums(list);
+  const [y, m] = invMonth.split('-').map(Number);
+  $('#app').innerHTML = `
+    <div class="card"><div class="row"><b class="grow">Monat</b><input type="month" id="invM" value="${invMonth}"></div>
+      <div class="grid2" style="margin-top:10px;gap:6px">
+        <div>💶 Bar: <b>${eur(t.bar)}</b></div><div>🏦 Überweisung: <b>${eur(t.ueb)}</b></div>
+        <div>⏳ Davon offen: <b>${eur(t.offen)}</b></div><div>Σ Gesamt: <b>${eur(t.total)}</b></div></div>
+      <button class="primary big" style="margin-top:12px" id="invPrint" ${list.length ? '' : 'disabled'}>🖨 ${MONTHS[m - 1]} drucken (Übersicht + alle ${list.length} Rechnungen)</button>
+      <p class="muted small" style="margin:6px 0 0">Ergibt eine PDF-Datei zum Ausdrucken und Abheften.</p></div>
+    ${list.length ? list.map(r => `<div class="card small"><div class="row"><div class="grow"><b>${esc(r.no)}</b> · ${fmtD(r.date)}<br>${esc((r.to || '').split('\n')[0])}</div>
+        <div style="text-align:right"><b>${eur(r.gross)}</b><br><span class="muted">${payLabel(r.pay)} · ${r.status}</span></div></div>
+        <div class="row" style="margin-top:6px"><button class="small" onclick="showInvoice(data.invoices.find(x=>x.id==='${r.id}'),false)">PDF</button>
+        ${r.status === 'offen' ? `<button class="small" onclick="markPaid('${r.id}')">✓ bezahlt</button>` : ''}</div></div>`).join('')
+      : '<p class="muted">Keine Rechnungen in diesem Monat.</p>'}`;
+  $('#invM').onchange = e => { invMonth = e.target.value || todayDs().slice(0, 7); render(); };
+  if (list.length) $('#invPrint').onclick = () => printMonth(invMonth);
+}
+async function printMonth(m) {
+  const list = monthInvoices(m), t = monthSums(list), [y, mo] = m.split('-').map(Number);
+  openModal('Monat drucken', `<p class="muted small" id="pdfState">PDF wird erstellt …</p>
+    <div style="display:grid;gap:8px"><button class="big primary" id="pDl" disabled>⬇️ PDF speichern / drucken</button>
+    <button class="big" id="pShare" disabled>📤 Teilen (z. B. an Drucker oder per Mail an sich selbst)</button></div>`);
+  await loadJsPdf();
+  const logo = await getLogo().catch(() => null), doc = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+  // Seite 1: Übersicht
+  const S = data.settings, green = [22, 74, 46];
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(...green); doc.text(`Rechnungen ${MONTHS[mo - 1]} ${y}`, 20, 22);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110); doc.text([S.name || '', S.inv.fullName || ''].filter(Boolean).join(' · '), 20, 28);
+  if (logo) try { doc.addImage(logo, 'PNG', 170, 10, 22, 22); } catch (e) { }
+  let yy = 40; doc.setFillColor(243, 227, 181); doc.rect(20, yy - 5, 170, 7.5, 'F'); doc.setTextColor(25); doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+  doc.text('Datum', 22, yy); doc.text('Nr.', 42, yy); doc.text('Kunde', 66, yy); doc.text('Zahlung', 128, yy); doc.text('Status', 152, yy); doc.text('Betrag', 188, yy, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); yy += 7;
+  for (const r of list) {
+    if (yy > 265) { doc.addPage(); yy = 20; }
+    doc.text(fmtD(r.date), 22, yy); doc.text(r.no, 42, yy); doc.text(doc.splitTextToSize((r.to || '').split('\n')[0], 58)[0], 66, yy);
+    doc.text(payLabel(r.pay), 128, yy); doc.text(r.status, 152, yy); doc.text(eur(r.gross), 188, yy, { align: 'right' });
+    yy += 6; doc.setDrawColor(230); doc.line(20, yy - 4, 190, yy - 4);
+  }
+  yy += 4; doc.setFontSize(10);
+  for (const [k, v, b] of [['Bar eingenommen', t.bar], ['Per Überweisung', t.ueb], ['Davon noch offen', t.offen], ['Gesamt', t.total, true]]) {
+    doc.setFont('helvetica', b ? 'bold' : 'normal'); doc.text(k, 150, yy, { align: 'right' }); doc.text(eur(v), 188, yy, { align: 'right' }); yy += 6; }
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110);
+  doc.text(`Erstellt am ${fmtD(todayDs())}. Stornierte Rechnungen und Stornorechnungen gleichen sich in der Summe aus.`, 20, yy + 6);
+  // danach jede Rechnung auf eigener Seite
+  for (const r of list) { doc.addPage(); drawInvoice(doc, r, false, logo); }
+  const blob = doc.output('blob'), name = `Rechnungen-${m}.pdf`, file = new File([blob], name, { type: 'application/pdf' });
+  $('#pdfState').textContent = `${name} ist fertig (${list.length + 1} Seiten).`;
+  $('#pDl').disabled = false;
+  $('#pDl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); };
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { $('#pShare').disabled = false; $('#pShare').onclick = () => navigator.share({ files: [file], title: name }).catch(() => {}); }
 }
 function markPaid(id) { const r = data.invoices.find(x => x.id === id); if (!r) return; r.status = 'bezahlt'; r.paidAt = todayDs(); save(); render(); toast('Als bezahlt markiert'); }
 async function stornoInvoice(id) {
