@@ -50,6 +50,15 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/appts/$(resource.data.apptId)).data.proof == secret;
     }
 
+    // Rechnungen: nur Team. Einmal erstellt, nicht mehr änderbar (nur Status) und nicht löschbar.
+    match /invoices/{id} {
+      allow read, create: if team();
+      allow update: if team() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paidAt']);
+      allow delete: if false;
+    }
+    // Zähler für fortlaufende Rechnungsnummern
+    match /counters/{id} { allow read, write: if team(); }
+
     match /{document=**} { allow read, write: if false; }
 
     function isDay(d) { return d is string && d.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}'); }

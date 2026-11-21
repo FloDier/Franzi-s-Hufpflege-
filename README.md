@@ -56,6 +56,15 @@ werden bei der ersten Anmeldung automatisch hochgeladen.
 - Stornos und Umbuchungen erscheinen sofort in der Verwaltung („Vom Kunden storniert“ bzw. „Vom Kunden umgebucht“).
 - Unter „Termine“ zeigt „Erinnerungen fällig“ die Termine von morgen und heute; ein Tipp öffnet WhatsApp mit fertigem Text.
 
+## Rechnungen
+- Beim Kunden auf **🧾 Rechnung**: Anschrift, Pferde und Preise (Standardpreis oder Preis je Pferd) werden übernommen,
+  optional Anfahrtspauschale, Zahlung per Überweisung oder bar. Ergebnis: PDF zum Teilen (WhatsApp, Mail) oder Speichern.
+- Rechnungsdaten unter ⚙️ Einstellungen → Rechnungen (Name, Anschrift, Steuernummer, Kleinunternehmerin/USt, Bankdaten).
+  Solange Pflichtangaben fehlen, entstehen nur **Entwürfe ohne Nummer**.
+- Fortlaufende Rechnungsnummern (z. B. 2026-001), auch bei zwei Geräten eindeutig. Rechnungen sind danach nicht mehr
+  änderbar (nur Status offen/bezahlt) und nicht löschbar; Korrektur über **Storno** (Stornorechnung mit eigener Nummer).
+- PDF-Bibliothek: `vendor/jspdf.umd.min.js` (jsPDF, MIT-Lizenz).
+
 ## Ohne Online-Speicher (nur lokal)
 - Der QR-Code enthält die freien Zeiten zum Zeitpunkt der Erzeugung. Nach neuen Terminen neu erzeugen.
 - Buchungen kommen als WhatsApp/E-Mail mit Link. Ein Tipp darauf trägt den Termin ein (mit Überschneidungs-Warnung).

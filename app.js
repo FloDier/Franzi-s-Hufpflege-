@@ -137,15 +137,18 @@ const KEY = 'stalltermine-v1';
 const DEFAULT_SETTINGS = {
   name: "Franzi's Hufpflege", phone: '', mail: '',
   work: [null, [480, 1020], [480, 1020], [480, 1020], [480, 1020], [480, 1020], [480, 720]], // So..Sa
-  raster: 30, minPerHorse: 45, buffer: 30, horizonWeeks: 8, blocked: [], lastBackup: null
+  raster: 30, minPerHorse: 45, buffer: 30, horizonWeeks: 8, blocked: [], lastBackup: null,
+  // Rechnungen (Preise sind Endpreise; bei MwSt-Pflicht inkl. MwSt)
+  inv: { fullName: '', street: '', zip: '', city: '', taxNo: '', vatId: '', taxMode: 'klein', vatRate: 19,
+    iban: '', bic: '', bank: '', holder: '', payDays: 14, pricePerHorse: 0, travelFee: 0 }
 };
 let data = load();
 function load() {
   try {
     const d = JSON.parse(localStorage.getItem(KEY));
-    if (d && d.customers) return { customers: d.customers, appts: d.appts || [], settings: { ...DEFAULT_SETTINGS, ...d.settings } };
+    if (d && d.customers) return { customers: d.customers, appts: d.appts || [], invoices: d.invoices || [], settings: { ...DEFAULT_SETTINGS, ...d.settings, inv: { ...DEFAULT_SETTINGS.inv, ...(d.settings || {}).inv } } };
   } catch (e) { console.error(e); }
-  return { customers: [], appts: [], settings: structuredClone(DEFAULT_SETTINGS) };
+  return { customers: [], appts: [], invoices: [], settings: structuredClone(DEFAULT_SETTINGS) };
 }
 function save() {
   localStorage.setItem(KEY, JSON.stringify(data));
@@ -221,7 +224,8 @@ let shadow = null, syncState = 'ok', pendingWrites = false;
 const snapshot = d => ({
   settings: JSON.stringify({ ...d.settings, lastBackup: undefined }),
   customers: Object.fromEntries(d.customers.map(c => [c.id, JSON.stringify(c)])),
-  appts: Object.fromEntries(d.appts.map(a => [a.id, JSON.stringify(a)]))
+  appts: Object.fromEntries(d.appts.map(a => [a.id, JSON.stringify(a)])),
+  invoices: Object.fromEntries((d.invoices || []).map(x => [x.id, JSON.stringify(x)]))
 });
 function queueDiff() {
   if (!FB || !cloud.user || !shadow) return;
@@ -231,7 +235,7 @@ function queueDiff() {
     batch.set(fs.doc(db, 'settings', 'main'), settingsForCloud(data.settings));
     batch.set(fs.doc(db, 'public', 'info'), publicInfo(data.settings)); n += 2;
   }
-  for (const t of ['customers', 'appts']) {
+  for (const t of ['customers', 'appts', 'invoices']) {
     for (const id in cur[t]) if (cur[t][id] !== old[t][id]) {
       const obj = JSON.parse(cur[t][id]);
       if (t === 'appts') {
@@ -258,19 +262,19 @@ function queueDiff() {
 }
 
 /* Live-Abgleich: Änderungen vom anderen Gerät kommen sofort an */
-let unsubs = [];
+let unsubs = [], invoicesBlocked = false;
 const dataListeners = new Set();
 async function startSync(localBefore) {
   const { fs, db } = FB;
   unsubs.forEach(u => u()); unsubs = [];
-  const got = { customers: null, appts: null, settings: undefined };
+  const got = { customers: null, appts: null, invoices: null, settings: undefined };
   let first = true;
   const apply = () => {
-    if (got.customers === null || got.appts === null || got.settings === undefined) return;
+    if (got.customers === null || got.appts === null || got.invoices === null || got.settings === undefined) return;
     const before = JSON.stringify(data);
     const next = {
-      customers: got.customers, appts: got.appts,
-      settings: got.settings ? { ...DEFAULT_SETTINGS, ...got.settings, lastBackup: data.settings.lastBackup } : data.settings
+      customers: got.customers, appts: got.appts, invoices: got.invoices,
+      settings: got.settings ? { ...DEFAULT_SETTINGS, ...got.settings, inv: { ...DEFAULT_SETTINGS.inv, ...got.settings.inv }, lastBackup: data.settings.lastBackup } : data.settings
     };
     // Nur ersetzen, wenn sich inhaltlich etwas geändert hat – sonst arbeiten offene Fenster mit alten Kopien weiter
     if (JSON.stringify(next) !== before) data = next;
@@ -284,6 +288,7 @@ async function startSync(localBefore) {
         const has = (list, id) => list.some(x => x.id === id);
         data.customers.push(...localBefore.customers.filter(c => !has(data.customers, c.id)));
         data.appts.push(...localBefore.appts.filter(a => !has(data.appts, a.id)));
+        data.invoices.push(...(localBefore.invoices || []).filter(x => !has(data.invoices, x.id)));
         if (!got.settings) data.settings = { ...DEFAULT_SETTINGS, ...localBefore.settings };
         localStorage.setItem(migKey, '1');
       }
@@ -302,6 +307,9 @@ async function startSync(localBefore) {
   const onErr = e => { console.warn('Abgleich:', e); syncState = e.code === 'permission-denied' ? 'denied' : 'error'; showSyncState(); if (syncState === 'denied') render(); };
   unsubs.push(fs.onSnapshot(fs.collection(db, 'customers'), { includeMetadataChanges: true }, s => { got.customers = s.docs.map(d => d.data()); onMeta(s); apply(); }, onErr));
   unsubs.push(fs.onSnapshot(fs.collection(db, 'appts'), { includeMetadataChanges: true }, s => { got.appts = s.docs.map(d => { const x = { ...d.data(), id: d.id }; delete x.startAt; delete x.proof; return x; }); onMeta(s); apply(); }, onErr));
+  // Rechnungen: fehlt die Berechtigung (alte Regeln), läuft der restliche Abgleich trotzdem weiter
+  unsubs.push(fs.onSnapshot(fs.collection(db, 'invoices'), { includeMetadataChanges: true }, s => { got.invoices = s.docs.map(d => d.data()); onMeta(s); apply(); },
+    e => { console.warn('Rechnungen:', e.code); invoicesBlocked = true; if (got.invoices === null) { got.invoices = data.invoices || []; apply(); } }));
   unsubs.push(fs.onSnapshot(fs.doc(db, 'settings', 'main'), { includeMetadataChanges: true }, s => {
     got.settings = s.exists() ? JSON.parse(s.data().json) : null; onMeta(s); apply(); }, onErr));
 }
@@ -623,8 +631,9 @@ function renderKunden() {
           <button class="small primary" onclick="openApptEditor('${c.id}')">+ Termin</button>
           <button class="small" onclick="sendBookingLink('${c.id}')">🔗 Buchungslink</button>
           ${c.stableAddr ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(mapsUrl(c.stableAddr))}">🗺 Route</a>` : ''}
+          <button class="small" onclick="openInvoiceEditor('${c.id}')">🧾 Rechnung</button>
           <button class="small" onclick="openCustomerEditor('${c.id}')">✏️ Bearbeiten</button>
-        </div></div>`;
+        </div>${invoiceListHTML(c.id)}</div>`;
     }).join('') : '<p class="muted">Keine Kunden gefunden.</p>'}</div>
     <button class="primary fab" onclick="openCustomerEditor()">+ Neuer Kunde</button>`;
   const inp = $('#cSearch');
@@ -654,7 +663,8 @@ function openCustomerEditor(id, afterSave) {
     const drawHorses = () => {
       $('#kHorses', body).innerHTML = horses.map((h, i) => `<div class="horse-row">
         <input class="grow" data-i="${i}" data-k="name" placeholder="Name des Pferdes" value="${esc(h.name)}">
-        <input style="width:40%" data-i="${i}" data-k="info" placeholder="Info (optional)" value="${esc(h.info || '')}">
+        <input style="width:30%" data-i="${i}" data-k="info" placeholder="Info (optional)" value="${esc(h.info || '')}">
+        <input style="width:72px;text-align:right" data-i="${i}" data-k="priceTxt" inputmode="decimal" placeholder="Preis €" value="${h.price != null ? centsToInput(h.price) : ''}">
         <button type="button" data-rm="${i}" aria-label="Entfernen">✕</button></div>`).join('');
       $('#kCount', body).textContent = horses.length;
     };
@@ -668,7 +678,9 @@ function openCustomerEditor(id, afterSave) {
       const rec = id ? (customerById(id) || c) : { id: uid(), created: new Date().toISOString() };
       Object.assign(rec, { owner: v('#kOwner'), stable: v('#kStable'), phone: v('#kPhone'), mail: v('#kMail'), ownerAddr: v('#kOwnerAddr'),
         stableAddr: v('#kStableAddr'), route: v('#kRoute'), note: v('#kNote'),
-        horses: horses.map(h => ({ name: h.name.trim(), info: (h.info || '').trim() })).filter(h => h.name) });
+        horses: horses.map(h => { const o = { name: h.name.trim(), info: (h.info || '').trim() };
+          const pt = h.priceTxt !== undefined ? h.priceTxt : (h.price != null ? centsToInput(h.price) : '');
+          if (String(pt).trim() !== '') o.price = toCents(pt); return o; }).filter(h => h.name) });
       if (!customerById(rec.id)) data.customers.push(rec);
       save(); closeModal(); render(); toast('Kunde gespeichert');
       if (afterSave) afterSave(rec);
@@ -782,6 +794,30 @@ function renderEinstellungen() {
     <div class="card"><h2>Freie Tage / Urlaub</h2>
       <div class="row"><input type="date" id="bFrom"> bis <input type="date" id="bTo"><button id="bAdd">Sperren</button></div>
       <div id="bList" style="margin-top:8px">${s.blocked.filter(d => d >= todayDs()).sort().map(d => `<span class="pill" style="margin:2px">${fmtDate(d)} <a href="#" data-unblock="${d}">✕</a></span>`).join('') || '<span class="muted small">Keine gesperrten Tage.</span>'}</div></div>
+    <div class="card"><h2>🧾 Rechnungen</h2>
+      ${invComplete(s.inv) ? '<div class="banner" style="background:var(--free-bg);border-color:var(--free-line);color:var(--brand)">✅ Vollständig – Rechnungen werden fortlaufend nummeriert.</div>'
+        : '<div class="banner">⚠️ Solange Name, Anschrift und Steuernummer fehlen, erstellt die App nur <b>Entwürfe ohne Rechnungsnummer</b>.</div>'}
+      <p class="muted small">Diese Angaben erscheinen nur auf Rechnungen, nicht auf der öffentlichen Seite.</p>
+      <label class="f">Vollständiger Name (Inhaberin) <input id="i_fullName" value="${esc(s.inv.fullName)}"></label>
+      <label class="f">Straße und Hausnummer <input id="i_street" value="${esc(s.inv.street)}"></label>
+      <div class="grid2"><label class="f">PLZ <input id="i_zip" inputmode="numeric" value="${esc(s.inv.zip)}"></label>
+        <label class="f">Ort <input id="i_city" value="${esc(s.inv.city)}"></label>
+        <label class="f">Steuernummer <input id="i_taxNo" value="${esc(s.inv.taxNo)}" placeholder="vom Finanzamt"></label>
+        <label class="f">USt-IdNr. (falls vorhanden) <input id="i_vatId" value="${esc(s.inv.vatId)}"></label></div>
+      <label class="f">Umsatzsteuer <select id="i_taxMode">
+        <option value="klein" ${s.inv.taxMode !== 'ust' ? 'selected' : ''}>Kleinunternehmerin – keine USt (§ 19 UStG)</option>
+        <option value="ust" ${s.inv.taxMode === 'ust' ? 'selected' : ''}>Umsatzsteuer ausweisen</option></select></label>
+      <div class="grid2">
+        <label class="f">USt-Satz in % <input id="i_vatRate" type="number" min="0" value="${esc(s.inv.vatRate)}"></label>
+        <label class="f">Zahlungsziel (Tage) <input id="i_payDays" type="number" min="0" value="${esc(s.inv.payDays)}"></label>
+        <label class="f">Standardpreis pro Pferd (€) <input id="i_pricePerHorse" inputmode="decimal" value="${esc(s.inv.pricePerHorse)}"></label>
+        <label class="f">Anfahrtspauschale (€) <input id="i_travelFee" inputmode="decimal" value="${esc(s.inv.travelFee)}"></label></div>
+      <p class="muted small">Preise sind Endpreise (bei Umsatzsteuer inkl. USt). Abweichende Preise je Pferd beim Kunden eintragen.</p>
+      <div class="grid2"><label class="f">Kontoinhaber <input id="i_holder" value="${esc(s.inv.holder)}"></label>
+        <label class="f">IBAN <input id="i_iban" value="${esc(s.inv.iban)}"></label>
+        <label class="f">BIC <input id="i_bic" value="${esc(s.inv.bic)}"></label>
+        <label class="f">Bank <input id="i_bank" value="${esc(s.inv.bank)}"></label></div>
+    </div>
     ${CLOUD ? `<div class="card"><h2>Online-Konto</h2><p class="small">Angemeldet als <b>${esc(cloud.user && cloud.user.email)}</b><br>
       <span class="muted">Kunden und Termine werden sofort mit dem zweiten Gerät abgeglichen – auch ohne Netz wird weitergearbeitet.</span></p>
       <div class="row"><button class="danger" onclick="if(pendingWrites&&!confirm('Es gibt noch nicht gesendete Änderungen. Trotzdem abmelden?'))return;cloudLogout()">Abmelden</button></div></div>` : ''}
@@ -802,6 +838,9 @@ function renderEinstellungen() {
     }
     s.minPerHorse = Math.max(5, Number($('#sMph').value) || 45); s.buffer = Math.max(0, Number($('#sBuf').value) || 0);
     s.raster = Number($('#sRaster').value); s.horizonWeeks = Math.min(26, Math.max(1, Number($('#sWeeks').value) || 8));
+    s.inv = { ...DEFAULT_SETTINGS.inv, ...s.inv };
+    for (const k of ['fullName', 'street', 'zip', 'city', 'taxNo', 'vatId', 'taxMode', 'holder', 'iban', 'bic', 'bank', 'pricePerHorse', 'travelFee']) { const el = $('#i_' + k); if (el) s.inv[k] = el.value.trim(); }
+    s.inv.vatRate = Number($('#i_vatRate').value) || 19; s.inv.payDays = Number($('#i_payDays').value) || 0;
     save(); $('#title').textContent = s.name || "Franzi's Hufpflege";
   };
   $('#app').onchange = e => { if (e.target.id !== 'bImport' && e.target.id !== 'bFrom' && e.target.id !== 'bTo') { saveSettings(); toast('Gespeichert'); } };
@@ -819,7 +858,7 @@ function renderEinstellungen() {
       const d = JSON.parse(t);
       if (!d.customers || !d.appts) throw new Error('Keine gültige Sicherung');
       if (!confirm(`Sicherung mit ${d.customers.length} Kunden und ${d.appts.length} Terminen laden? Die aktuellen Daten werden ersetzt.`)) return;
-      data = { customers: d.customers, appts: d.appts, settings: { ...DEFAULT_SETTINGS, ...d.settings } }; save(); render(); toast('Sicherung geladen');
+      data = { customers: d.customers, appts: d.appts, invoices: d.invoices || [], settings: { ...DEFAULT_SETTINGS, ...d.settings, inv: { ...DEFAULT_SETTINGS.inv, ...(d.settings || {}).inv } } }; save(); render(); toast('Sicherung geladen');
     }).catch(err => alert('Fehler beim Laden: ' + err.message));
   };
 }
@@ -829,6 +868,211 @@ function exportBackup() {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `stalltermine-sicherung-${todayDs()}.json`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   render();
+}
+
+/* =====================================================================
+   RECHNUNGEN (PDF, fortlaufende Nummer, Teilen per WhatsApp)
+   ===================================================================== */
+const eur = c => (c / 100).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
+const toCents = v => Math.round((Number(String(v ?? '').replace(/\./g, '').replace(',', '.')) || 0) * 100);
+const centsToInput = c => (c / 100).toFixed(2).replace('.', ',');
+const fmtD = d => { const x = parseDs(d); return `${pad(x.getDate())}.${pad(x.getMonth() + 1)}.${x.getFullYear()}`; };
+const invComplete = inv => !!(inv.fullName && inv.street && inv.zip && inv.city && (inv.taxNo || inv.vatId));
+function invTotals(items, taxMode, vatRate) {
+  const gross = items.reduce((sum, i) => sum + i.qty * i.price, 0);
+  if (taxMode === 'ust') { const net = Math.round(gross / (1 + vatRate / 100)); return { gross, net, vat: gross - net }; }
+  return { gross, net: gross, vat: 0 };
+}
+/* Fortlaufende Nummer – online über eine Transaktion, damit zwei Geräte nie dieselbe Nummer vergeben */
+async function nextInvoiceNo() {
+  const year = new Date().getFullYear(), fmt = n => `${year}-${String(n).padStart(3, '0')}`;
+  if (CLOUD && FB) {
+    const { fs, db } = FB;
+    return fs.runTransaction(db, async tx => {
+      const ref = fs.doc(db, 'counters', 'invoices'), snap = await tx.get(ref), d = snap.exists() ? snap.data() : {};
+      const n = d.year === year ? (d.last || 0) + 1 : 1;
+      tx.set(ref, { year, last: n }); return fmt(n);
+    });
+  }
+  const c = data.settings.invCounter || {}, n = c.year === year ? (c.last || 0) + 1 : 1;
+  data.settings.invCounter = { year, last: n }; save(); return fmt(n);
+}
+function openInvoiceEditor(cid) {
+  const c = customerById(cid); if (!c) return;
+  const inv = data.settings.inv, complete = invComplete(inv);
+  const last = data.appts.filter(a => a.customerId === cid && isActive(a) && a.date <= todayDs()).sort((a, b) => b.date.localeCompare(a.date))[0];
+  const want = last && last.horses && last.horses.length ? last.horses : c.horses.map(h => h.name);
+  const rows = c.horses.length ? c.horses.map(h => ({ name: h.name, on: want.includes(h.name), price: h.price ?? toCents(inv.pricePerHorse) }))
+    : [{ name: '', on: true, price: toCents(inv.pricePerHorse), qty: (last && last.count) || 1 }];
+  openModal('Rechnung erstellen', `
+    ${complete ? '' : `<div class="banner">⚠️ Rechnungsdaten unvollständig (Name, Anschrift, Steuernummer). Es entsteht nur ein <b>Entwurf ohne Rechnungsnummer</b>.
+      Ergänzen unter ⚙️ Einstellungen → Rechnungen.</div>`}
+    <label class="f">Rechnung an <textarea id="rTo" rows="3">${esc([c.owner, c.ownerAddr || c.stableAddr].filter(Boolean).join('\n'))}</textarea></label>
+    <label class="f">Leistungsdatum <input id="rDate" type="date" value="${last ? last.date : todayDs()}"></label>
+    <div class="muted small">Pferde und Preis (Endpreis in €)</div>
+    <div id="rRows">${rows.map((r, i) => `<div class="row" style="margin:6px 0">
+      <label class="chk grow" style="padding:0"><input type="checkbox" data-r="${i}" ${r.on ? 'checked' : ''}> ${r.name ? esc(r.name) : `Hufbearbeitung <input data-qty="${i}" type="number" min="1" value="${r.qty}" style="width:64px;padding:6px"> Pferd(e)`}</label>
+      <input data-p="${i}" inputmode="decimal" value="${centsToInput(r.price)}" style="width:96px;text-align:right"> €</div>`).join('')}</div>
+    <div class="row" style="margin:10px 0"><label class="chk grow" style="padding:0"><input type="checkbox" id="rTravelOn" ${toCents(inv.travelFee) > 0 ? 'checked' : ''}> Anfahrtspauschale</label>
+      <input id="rTravel" inputmode="decimal" value="${centsToInput(toCents(inv.travelFee))}" style="width:96px;text-align:right"> €</div>
+    <div class="muted small">Zahlung</div>
+    <div class="row" style="margin:4px 0 10px"><label class="chk"><input type="radio" name="rPay" value="ueberweisung" checked> Überweisung</label>
+      <label class="chk"><input type="radio" name="rPay" value="bar"> Bar erhalten</label></div>
+    <div class="card" id="rSum" style="background:var(--free-bg);border-color:var(--free-line)"></div>
+    <button class="primary big" id="rGo">🧾 ${complete ? 'Rechnung erstellen' : 'Entwurf ansehen'}</button>`, body => {
+    const read = () => {
+      const items = [];
+      rows.forEach((r, i) => { if (!$(`[data-r="${i}"]`, body).checked) return;
+        const price = toCents($(`[data-p="${i}"]`, body).value), qty = r.name ? 1 : Math.max(1, Number(($(`[data-qty="${i}"]`, body) || {}).value) || 1);
+        items.push({ text: r.name ? `Hufbearbeitung ${r.name}` : 'Hufbearbeitung', qty, price, horse: r.name || null }); });
+      if ($('#rTravelOn', body).checked) items.push({ text: 'Anfahrtspauschale', qty: 1, price: toCents($('#rTravel', body).value) });
+      return items;
+    };
+    const sum = () => { const t = invTotals(read(), inv.taxMode, Number(inv.vatRate) || 19);
+      $('#rSum', body).innerHTML = inv.taxMode === 'ust'
+        ? `Netto ${eur(t.net)} · USt ${inv.vatRate} % ${eur(t.vat)}<br><b style="font-size:18px">Gesamt ${eur(t.gross)}</b>`
+        : `<b style="font-size:18px">Gesamt ${eur(t.gross)}</b><br><span class="muted small">ohne Umsatzsteuer (§ 19 UStG)</span>`; };
+    body.oninput = sum; body.onchange = sum; sum();
+    $('#rGo', body).onclick = async () => {
+      const items = read();
+      if (!items.length) return toast('Bitte mindestens eine Position auswählen');
+      const pay = $('input[name=rPay]:checked', body).value, btn = $('#rGo', body);
+      const rec = { id: uid(), no: 'ENTWURF', date: todayDs(), serviceDate: $('#rDate', body).value || todayDs(), customerId: cid,
+        to: $('#rTo', body).value.trim(), items, pay, taxMode: inv.taxMode, vatRate: Number(inv.vatRate) || 19,
+        ...invTotals(items, inv.taxMode, Number(inv.vatRate) || 19), status: pay === 'bar' ? 'bezahlt' : 'offen',
+        seller: { ...inv, name: data.settings.name, phone: data.settings.phone, mail: data.settings.mail }, created: new Date().toISOString() };
+      if (complete && invoicesBlocked) return alert('Rechnungen sind im Online-Speicher noch nicht freigeschaltet. Bitte die neuen Firestore-Regeln einfügen.');
+      if (complete) {
+        btn.disabled = true; btn.textContent = 'Rechnungsnummer wird vergeben …';
+        try { rec.no = await nextInvoiceNo(); }
+        catch (e) { console.warn(e); btn.disabled = false; btn.textContent = '🧾 Rechnung erstellen';
+          return alert('Für eine Rechnungsnummer wird eine Internetverbindung benötigt. Bitte später erneut versuchen.'); }
+        data.invoices.push(rec);
+        // Zuletzt verwendeten Preis je Pferd beim Kunden merken
+        const cc = customerById(cid); if (cc) for (const it of items) { const h = cc.horses.find(x => x.name === it.horse); if (h) h.price = it.price; }
+        save(); render();
+      }
+      showInvoice(rec, !complete);
+    };
+  });
+}
+let invPdf = null;
+async function showInvoice(rec, draft) {
+  const c = customerById(rec.customerId) || {};
+  openModal(draft ? 'Rechnungsentwurf' : `Rechnung ${rec.no}`, `
+    <p><b>${eur(rec.gross)}</b> · ${esc((rec.to || '').split('\n')[0])}<br><span class="muted small">${draft ? 'Entwurf – nicht gespeichert, ohne Rechnungsnummer' : 'gespeichert · ' + (rec.status === 'bezahlt' ? 'bezahlt' : 'offen')}</span></p>
+    <p class="muted small" id="pdfState">PDF wird erstellt …</p>
+    <div style="display:grid;gap:8px">
+      <button class="wa big" id="pShare" disabled>📤 Teilen (WhatsApp, Mail …)</button>
+      <button class="big" id="pDl" disabled>⬇️ PDF speichern</button>
+      ${c.phone ? `<a class="btn big" target="_blank" rel="noopener" href="${esc(waLink(c.phone, `Hallo ${c.owner || ''},\n\nanbei meine Rechnung ${draft ? '' : 'Nr. ' + rec.no + ' '}über ${eur(rec.gross)}. Die PDF schicke ich Ihnen gleich mit.\n\nViele Grüße\n${data.settings.name || ''}`))}">💬 WhatsApp-Chat mit ${esc(c.owner)} öffnen</a>` : ''}
+    </div>
+    <p class="muted small" style="margin-top:10px">Tipp: „Teilen“ antippen → WhatsApp → Kunden auswählen. Die PDF wird als Datei verschickt.</p>`);
+  invPdf = null;
+  try { invPdf = await buildInvoicePdf(rec, draft); }
+  catch (e) { console.warn(e); $('#pdfState').textContent = 'PDF konnte nicht erstellt werden.'; return; }
+  const name = `Rechnung-${draft ? 'Entwurf' : rec.no}.pdf`;
+  $('#pdfState').textContent = `${name} ist fertig.`;
+  const file = new File([invPdf], name, { type: 'application/pdf' });
+  const canShare = navigator.canShare && navigator.canShare({ files: [file] });
+  $('#pShare').disabled = !canShare; if (!canShare) $('#pShare').textContent = '📤 Teilen (auf diesem Gerät nicht verfügbar)';
+  $('#pDl').disabled = false;
+  $('#pShare').onclick = () => navigator.share({ files: [file], title: name }).catch(() => {});
+  $('#pDl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(invPdf); a.download = name; document.body.appendChild(a); a.click(); a.remove(); };
+}
+function loadJsPdf() {
+  if (window.jspdf) return Promise.resolve();
+  return new Promise((ok, fail) => { const sc = document.createElement('script'); sc.src = 'vendor/jspdf.umd.min.js'; sc.onload = ok; sc.onerror = fail; document.head.appendChild(sc); });
+}
+let logoData = null;
+async function getLogo() {
+  if (logoData) return logoData;
+  const b = await (await fetch('apple-touch-icon.png')).blob();
+  logoData = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
+  return logoData;
+}
+async function buildInvoicePdf(rec, draft) {
+  await loadJsPdf();
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const S = rec.seller || {}, green = [22, 74, 46], grey = [110, 110, 110], dark = [25, 25, 25];
+  const addr1 = [S.fullName, S.street, [S.zip, S.city].filter(Boolean).join(' ')].filter(Boolean);
+  // Wasserzeichen zuerst zeichnen, damit es hinter dem Text liegt
+  if (draft) { doc.setTextColor(236, 236, 236); doc.setFont('helvetica', 'bold'); doc.setFontSize(90); doc.text('ENTWURF', 45, 215, { angle: 35 }); }
+  try { doc.addImage(await getLogo(), 'PNG', 163, 12, 30, 30); } catch (e) { /* ohne Logo */ }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.setTextColor(...green); doc.text(S.name || 'Hufpflege', 20, 22);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...grey);
+  doc.text([...addr1, S.phone ? 'Tel. ' + S.phone : '', S.mail || ''].filter(Boolean), 20, 28);
+  // Absenderzeile + Empfänger (Fensterposition)
+  doc.setFontSize(7); doc.text(addr1.join(' · '), 20, 52);
+  doc.setDrawColor(200); doc.line(20, 53.5, 95, 53.5);
+  doc.setFontSize(11); doc.setTextColor(...dark); doc.text((rec.to || '').split('\n').slice(0, 6), 20, 59);
+  // Rechnungsdaten rechts
+  let y = 59;
+  for (const [k, v] of [['Rechnungsnr.', rec.no], ['Rechnungsdatum', fmtD(rec.date)], ['Leistungsdatum', fmtD(rec.serviceDate)]]) {
+    doc.setFontSize(9); doc.setTextColor(...grey); doc.text(k, 130, y); doc.setTextColor(...dark); doc.text(String(v), 190, y, { align: 'right' }); y += 5.5;
+  }
+  // Titel
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(...dark);
+  doc.text(rec.stornoOf ? 'Stornorechnung' : 'Rechnung', 20, 100);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text(rec.stornoOf ? `Storno zu Rechnung Nr. ${rec.stornoOf}. Die Rechnung wird hiermit aufgehoben.` : 'Vielen Dank für Ihren Auftrag. Ich berechne Ihnen folgende Leistungen:', 20, 107);
+  // Tabelle
+  y = 116;
+  doc.setFillColor(243, 227, 181); doc.rect(20, y - 5, 170, 7.5, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5);
+  doc.text('Pos.', 22, y); doc.text('Leistung', 34, y); doc.text('Menge', 132, y, { align: 'right' }); doc.text('Einzelpreis', 160, y, { align: 'right' }); doc.text('Gesamt', 188, y, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); y += 8;
+  rec.items.forEach((it, i) => {
+    doc.text(String(i + 1), 22, y); doc.text(doc.splitTextToSize(it.text, 90), 34, y);
+    doc.text(String(it.qty), 132, y, { align: 'right' }); doc.text(eur(it.price), 160, y, { align: 'right' }); doc.text(eur(it.qty * it.price), 188, y, { align: 'right' });
+    y += 7; doc.setDrawColor(230); doc.line(20, y - 4, 190, y - 4);
+  });
+  // Summen
+  y += 3;
+  const line = (k, v, bold) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(bold ? 11.5 : 10); doc.text(k, 140, y, { align: 'right' }); doc.text(v, 188, y, { align: 'right' }); y += bold ? 7 : 6; };
+  if (rec.taxMode === 'ust') { line('Nettobetrag', eur(rec.net)); line(`zzgl. ${rec.vatRate} % USt`, eur(rec.vat)); }
+  doc.setDrawColor(...green); doc.line(120, y - 4, 190, y - 4);
+  line('Gesamtbetrag', eur(rec.gross), true);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(...dark); y += 3;
+  if (rec.taxMode !== 'ust') { doc.text('Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.', 20, y); y += 7; }
+  else { doc.text(`Alle Einzelpreise inkl. ${rec.vatRate} % Umsatzsteuer.`, 20, y); y += 7; }
+  // Zahlung
+  if (!rec.stornoOf) {
+    if (rec.pay === 'bar') { doc.text(`Betrag in bar erhalten am ${fmtD(rec.date)}. Vielen Dank!`, 20, y); y += 7; }
+    else {
+      const due = addDays(rec.date, Number(S.payDays) || 14);
+      doc.text(doc.splitTextToSize(`Bitte überweisen Sie den Gesamtbetrag bis zum ${fmtD(due)} unter Angabe der Rechnungsnummer ${rec.no} auf folgendes Konto:`, 170), 20, y); y += 11;
+      const bank = [S.holder ? 'Kontoinhaber: ' + S.holder : '', S.iban ? 'IBAN: ' + S.iban : '', S.bic ? 'BIC: ' + S.bic : '', S.bank ? 'Bank: ' + S.bank : ''].filter(Boolean);
+      if (bank.length) { doc.text(bank, 25, y); y += bank.length * 5 + 3; }
+    }
+    doc.text('Vielen Dank für Ihr Vertrauen!', 20, y + 2);
+  }
+  // Fußzeile
+  doc.setDrawColor(...green); doc.line(20, 280, 190, 280); doc.setFontSize(7.5); doc.setTextColor(...grey);
+  doc.text([[S.name, ...addr1].filter(Boolean).join(' · '),
+    [S.taxNo ? 'Steuernummer: ' + S.taxNo : '', S.vatId ? 'USt-IdNr.: ' + S.vatId : '', S.iban ? 'IBAN: ' + S.iban : ''].filter(Boolean).join(' · ')], 105, 285, { align: 'center' });
+  return doc.output('blob');
+}
+function markPaid(id) { const r = data.invoices.find(x => x.id === id); if (!r) return; r.status = 'bezahlt'; r.paidAt = todayDs(); save(); render(); toast('Als bezahlt markiert'); }
+async function stornoInvoice(id) {
+  const r = data.invoices.find(x => x.id === id); if (!r) return;
+  if (!confirm(`Rechnung ${r.no} stornieren? Es wird eine Stornorechnung mit neuer Nummer erstellt.`)) return;
+  let no; try { no = await nextInvoiceNo(); } catch (e) { return alert('Für eine Rechnungsnummer wird eine Internetverbindung benötigt.'); }
+  const items = r.items.map(it => ({ ...it, price: -it.price }));
+  const st = { ...r, id: uid(), no, date: todayDs(), items, ...invTotals(items, r.taxMode, r.vatRate), stornoOf: r.no, status: 'storno', created: new Date().toISOString() };
+  delete st.paidAt;
+  r.status = 'storniert'; data.invoices.push(st); save(); render(); showInvoice(st, false);
+}
+function invoiceListHTML(cid) {
+  const list = data.invoices.filter(x => x.customerId === cid).sort((a, b) => b.created.localeCompare(a.created));
+  if (!list.length) return '';
+  const pill = s => s === 'bezahlt' ? '<span class="pill green">bezahlt</span>' : s === 'offen' ? '<span class="pill" style="background:#fef3c7;color:#92400e">offen</span>'
+    : s === 'storniert' ? '<span class="pill">storniert</span>' : '<span class="pill">Storno</span>';
+  return `<details style="margin-top:8px"><summary class="small">🧾 Rechnungen (${list.length})</summary>${list.map(r => `
+    <div class="row small" style="margin:6px 0"><span class="grow">${esc(r.no)} · ${fmtD(r.date)} · <b>${eur(r.gross)}</b> ${pill(r.status)}</span>
+      <button class="small" onclick="showInvoice(data.invoices.find(x=>x.id==='${r.id}'),false)">PDF</button>
+      ${r.status === 'offen' ? `<button class="small" onclick="markPaid('${r.id}')">✓ bezahlt</button>` : ''}
+      ${['offen', 'bezahlt'].includes(r.status) ? `<button class="small danger" onclick="stornoInvoice('${r.id}')">Storno</button>` : ''}</div>`).join('')}</details>`;
 }
 
 /* ---------- Buchungsanfrage eines Kunden übernehmen ---------- */
